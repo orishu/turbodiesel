@@ -1,26 +1,23 @@
+
 use pest::Parser;
+use crate::pipeline::Pipeline;
 
 #[derive(pest_derive::Parser)]
 #[grammar = "pest/flowquery.pest"]
-pub struct MyParser;
+pub struct FlowQueryParser;
 
-impl MyParser {
+impl FlowQueryParser {
     pub fn do_parse(input: &str) {
-        let parse = MyParser::parse(Rule::ident, input).unwrap();
-        for pair in parse.into_iter() {
-            // match the rule, as the rule is an enum
-            match (pair.as_rule(), pair.as_span()) {
-                (Rule::ident, span) => {
-                    println!("{:?}", span);
-                    // for each sub-rule, print the inner contents
-                    for tag in pair.into_inner() {
-                        println!("  {:?}", tag);
-                    }
-                }
-                // as we have  parsed document, which is a top level rule, there
-                // cannot be anything else
-                _ => unreachable!(),
+        let pairs = FlowQueryParser::parse(Rule::query, input).unwrap();
+        for pair in pairs.clone() {
+            println!("Rule: {:?}, Text: {}", pair.as_rule(), pair.as_str());
+            for inner_pair in pair.into_inner() {
+                println!("  Inner: {:?}, {}", inner_pair.as_rule(), inner_pair.as_str());
             }
         }
+
+        let pipeline = Pipeline::new(pairs);
+        println!("pipeline: {:?}", pipeline)
+        // TODO: execute pipeline
     }
 }
