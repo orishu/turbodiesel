@@ -1,6 +1,6 @@
 
 use pest::Parser;
-use crate::pipeline::Pipeline;
+use crate::pipeline::{Parsable, Query};
 
 #[derive(pest_derive::Parser)]
 #[grammar = "pest/flowquery.pest"]
@@ -8,7 +8,7 @@ pub struct FlowQueryParser;
 
 impl FlowQueryParser {
     pub fn do_parse(input: &str) {
-        let pairs = FlowQueryParser::parse(Rule::query, input).unwrap();
+        let mut pairs = FlowQueryParser::parse(Rule::query, input).unwrap();
         for pair in pairs.clone() {
             println!("Rule: {:?}, Text: {}", pair.as_rule(), pair.as_str());
             for inner_pair in pair.into_inner() {
@@ -16,8 +16,8 @@ impl FlowQueryParser {
             }
         }
 
-        let pipeline = Pipeline::new(pairs);
-        println!("pipeline: {:?}", pipeline)
+        let query = Query::parse(pairs.next().unwrap().into_inner());
+        println!("query: {:?}", query);
         // TODO: execute pipeline
     }
 }
