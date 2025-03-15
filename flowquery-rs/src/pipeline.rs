@@ -7,8 +7,18 @@ pub struct Query {
 
 #[derive(Debug)]
 pub struct Pipeline {
-    source: TableRef,
+    source: Source,
     transforms: Vec<TransformationClass>,
+}
+
+#[derive(Debug)]
+pub struct Source {
+    source_option: SourceClass,
+}
+
+#[derive(Debug)]
+enum SourceClass {
+    TableRef(TableRef),
 }
 
 #[derive(Debug)]
@@ -28,7 +38,6 @@ pub enum ParseError {
     NotImplemented,
     UnexpectedToken,
     MissingToken,
-    MissingRule,
 }
 
 #[derive(Debug)]
@@ -43,7 +52,7 @@ pub trait Parsable: Sized {
 
 impl Parsable for TableRef {
     fn parse(pairs: pest::iterators::Pairs<'_, Rule>) -> Result<Self, ParseError> {
-        let mut iter = pairs;
+        let mut iter = pairs.filter(|p| p.as_rule() == Rule::ident);
         let table_name = iter
             .next()
             .ok_or(ParseError::MissingToken)?
@@ -67,69 +76,37 @@ impl Parsable for Query {
     }
 }
 
+impl Parsable for Source {
+    fn parse(pairs: pest::iterators::Pairs<'_, Rule>) -> Result<Self, ParseError> {
+        let mut iter = pairs;
+        let item = iter.next().ok_or(ParseError::MissingToken)?;
+        let table_ref = match (item.as_rule(), item.into_inner()) {
+            (Rule::table_ref, inner) => Ok(SourceClass::TableRef(TableRef::parse(inner)?)),
+            _ => Err(ParseError::UnexpectedToken)?,
+        }?;
+        Ok(Source {
+            source_option: table_ref,
+        })
+    }
+}
+
 impl Parsable for Pipeline {
     fn parse(pairs: pest::iterators::Pairs<'_, Rule>) -> Result<Self, ParseError> {
-        Err(ParseError::NotImplemented)
+        let mut iter = pairs;
+        let first_child = iter.next().ok_or(ParseError::MissingToken)?;
+        let source = Source::parse(first_child.into_inner())?;
+        let transforms: Result<Vec<TransformationClass>, ParseError> = iter
+            .map(|t| match (t.as_rule(), t.into_inner()) {
+                (Rule::pipe_transform, inner) => Ok(TransformationClass::Pipe(PipeTransform {})),
+                (Rule::side_effect_transform, inner) => {
+                    Ok(TransformationClass::SideEffect(SideEffectTransform {}))
+                }
+                _ => Err(ParseError::UnexpectedToken)?,
+            })
+            .collect();
+        Ok(Pipeline {
+            source,
+            transforms: transforms?,
+        })
     }
 }
-
-/*
-impl Pipeline {
-    pub fn new(pairs: pest::iterators::Pairs<'_, Rule>) -> Self {
-        //let mut stages = Vec::new();
-        let mut table: Option<TableRef> = None;
-        for pair in pairs {
-            match (pair.as_rule(), pair.into_inner()) {
-                (Rule::query, inner) => {
-                    for query_pair in inner {
-                        match (query_pair.as_rule(), query_pair.into_inner()) {
-                            (Rule::pipeline, inner) => {
-                                for pipeline_pair in inner {
-                                    match (pipeline_pair.as_rule(), pipeline_pair.into_inner()) {
-                                        (Rule::source, mut inner) => {
-                                            let table_ref = TableRef::parse(inner.next().unwrap());
-                                            println!("Table ref: {:?}", table_ref);
-                                            table = Some(table_ref);
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        println!("Table: {:?}", table);
-        /*
-        let mut iter = pairs.into_iter();
-        let source = iter.next().unwrap();
-        let table_ref = TableRef::parse(source);
-
-
-        for pair in pipeline {
-            match (pair.as_rule(), pair.as_span())  {
-                (Rule::source, span) => {
-                    println!("Source found at {:?}", span);
-                },
-                (Rule::pipe_transform, span) => {
-                    println!("Pipe Transform found at {:?}", span);
-        for pair in pairs {
-            match (pair.as_rule(), pair.as_span())  {
-                (Rule::query, span) => {
-                    println!("Query found at {:?}", span);
-                }
-                _ => unreachable!(),
-            }
-        }
-        */
-        Pipeline {
-            source: table.unwrap(),
-        }
-    }
-}
-
-    */
