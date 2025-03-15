@@ -16,7 +16,7 @@ impl FlowQueryParser {
             }
         }
 
-        let query = Query::parse(pairs.next().unwrap().into_inner());
+        let query = Query::parse(pairs.next().unwrap());
         println!("query: {:?}", query);
         // TODO: execute pipeline
     }
