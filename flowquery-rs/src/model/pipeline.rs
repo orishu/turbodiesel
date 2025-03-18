@@ -1,3 +1,4 @@
+use core::fmt;
 
 use partially::Partial;
 use postgres::fallible_iterator::FallibleIterator;
@@ -5,6 +6,8 @@ use postgres::fallible_iterator::FallibleIterator;
 use postgres::{Client, NoTls};
 
 use partially_derive::Partial;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 struct ComputeState {
     client: Client,
@@ -16,10 +19,18 @@ trait Flowable {
     fn compute(&self, state: &mut ComputeState) -> impl Iterator<Item = Self::Type>;
 }
 
-#[derive(Debug, Partial)]
+#[derive(Debug, Partial, Default, Serialize)]
 #[partially(derive(Debug, Default))]
 struct TestTableRow {
     id: i64,
+    name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct OtherTestTableRow {
+    id: i64,
+
+    #[serde(rename = "the_name")]
     name: String,
 }
 
@@ -85,18 +96,28 @@ impl<I: Partial<Item = O>, F: Flowable<Type = I>, O> Flowable for Select<I, F, O
 struct TableData<'a, R> {
     table_name: &'a str,
     _marker: std::marker::PhantomData<R>,
+    field_names: Vec<String>,
 }
 
-impl<'a, R> TableData<'a, R> {
+impl<'a, R: Default + Serialize> TableData<'a, R> {
     fn new(table_name: &'a str) -> Self {
         TableData {
             table_name,
             _marker: std::marker::PhantomData,
+            field_names: get_field_names::<R>(),
         }
+    }
+
+    fn query_string(&self) -> String {
+        format!(
+            "SELECT {} FROM {}",
+            self.field_names.join(", "),
+            self.table_name
+        )
     }
 }
 
-impl<'a, R> Flowable for TableData<'a, R>
+impl<'a, R: Default + Serialize> Flowable for TableData<'a, R>
 where
     R: From<postgres::Row>,
 {
@@ -105,13 +126,26 @@ where
     fn compute(&self, state: &mut ComputeState) -> impl Iterator<Item = R> {
         state
             .client
-            .query_raw(
-                ("select * from ".to_string() + self.table_name).as_str(),
-                Vec::<&str>::new(),
-            )
+            .query_raw(self.query_string().as_str(), Vec::<&str>::new())
             .unwrap()
             .iterator()
             .map(|res| R::from(res.unwrap()))
+    }
+}
+
+fn get_field_names<T: Serialize + Default>() -> Vec<String> {
+    let serialized = ron::ser::to_string(&T::default()).unwrap();
+    let val: ron::Value = ron::de::from_str(&serialized).unwrap();
+    match val {
+        ron::Value::Map(map_val) => map_val
+            .iter()
+            .map(|(name, _obj)| match (name) {
+                ron::Value::String(s) => Some(s.to_string()),
+                _ => None,
+            })
+            .filter_map(|x| x)
+            .collect(),
+        _ => vec![],
     }
 }
 
@@ -122,6 +156,8 @@ struct PartialTestRow {
 
 #[cfg(test)]
 mod tests {
+    use std::any::Any;
+
     use super::*;
 
     #[test]
@@ -169,6 +205,46 @@ mod tests {
             let id: i32 = row.get(0);
             let name: &str = row.get(1);
             println!("found student: {} {}", id, name);
+        }
+    }
+
+    #[test]
+    fn test_basic_json_serialization() {
+        let row = OtherTestTableRow {
+            id: 1,
+            name: "John".to_string(),
+        };
+        let serialized = serde_json::to_string(&row).unwrap();
+        println!("Serialized row: {}", serialized);
+        let deserialized: OtherTestTableRow = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(row, deserialized);
+
+        let val: Value = serde_json::from_str(&serialized).unwrap();
+        for (name, obj) in val.as_object().unwrap().iter() {
+            println!("{} is {:?}", name, obj);
+        }
+    }
+
+    #[test]
+    fn test_basic_ron_serialization() {
+        let row = OtherTestTableRow {
+            id: 1,
+            name: "John".to_string(),
+        };
+        let serialized = ron::ser::to_string(&row).unwrap();
+        println!("Serialized row: {}", serialized);
+        let deserialized: OtherTestTableRow = ron::de::from_str(&serialized).unwrap();
+        assert_eq!(row, deserialized);
+
+        let val: ron::Value = ron::de::from_str(&serialized).unwrap();
+        println!("VALUE {:?}", val);
+        if let ron::Value::Map(map_val) = val {
+            for (name, obj) in map_val.iter() {
+                if let ron::Value::String(s) = name {
+                    println!("String key: {}", s);
+                }
+                println!("{:?} is {:?}", name, obj);
+            }
         }
     }
 

@@ -11,4 +11,6 @@ partially_derive = "0.2.1"
 pest = "2.7.15"
 pest_derive = "2.7.15"
 postgres = "0.19.10"
-serde = "1.0.219"
+ron = { version = "0.8.1", features = ["indexmap"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
