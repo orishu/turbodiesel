@@ -1,11 +1,10 @@
 use core::fmt;
+use std::collections::HashMap;
 
-use partially::Partial;
 use postgres::fallible_iterator::FallibleIterator;
 
 use postgres::{Client, NoTls};
 
-use partially_derive::Partial;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -19,18 +18,139 @@ trait Flowable {
     fn compute(&self, state: &mut ComputeState) -> impl Iterator<Item = Self::Type>;
 }
 
-#[derive(Debug, Partial, Default, Serialize)]
-#[partially(derive(Debug, Default))]
-struct TestTableRow {
-    id: i64,
-    name: String,
+enum ColumnSelection {
+    All,
+    Selected(Vec<(String, String)>),
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-struct OtherTestTableRow {
-    id: i64,
+trait Sqlable {
+    fn execute(&self, state: &mut ComputeState) -> impl Iterator<Item = postgres::Row>;
 
-    #[serde(rename = "the_name")]
+    fn source_name(&self) -> String;
+
+    fn selected_columns(&self) -> ColumnSelection;
+}
+
+trait Columnar {
+    fn column_names(&self) -> Vec<String>;
+}
+
+#[derive(Debug)]
+struct Table {
+    table_name: String,
+}
+
+impl Table {
+    fn new(table_name: &str) -> Self {
+        Table {
+            table_name: table_name.to_string(),
+        }
+    }
+}
+
+impl Sqlable for Table {
+    fn execute(&self, state: &mut ComputeState) -> impl Iterator<Item = postgres::Row> {
+        let query_string = format!("SELECT * FROM {}", self.table_name.to_string());
+        state
+            .client
+            .query_raw(query_string.as_str(), Vec::<&str>::new())
+            .unwrap()
+            .iterator()
+            .map(|r| r.unwrap())
+    }
+
+    fn source_name(&self) -> String {
+        self.table_name.clone()
+    }
+
+    fn selected_columns(&self) -> ColumnSelection {
+        ColumnSelection::All
+    }
+}
+
+#[derive(Debug)]
+struct Select1<'a> {
+    source: Table,
+    select_sql_expressions: HashMap<&'a str, &'a str>,
+}
+
+impl<'a> Select1<'a> {
+    fn new(source: Table, sql_expressions: HashMap<&'a str, &'a str>) -> Self {
+        Select1 {
+            source,
+            select_sql_expressions: sql_expressions,
+        }
+    }
+}
+
+impl<'a> Columnar for Select1<'a> {
+    fn column_names(&self) -> Vec<String> {
+        self.select_sql_expressions
+            .keys()
+            .into_iter()
+            .map(|x| x.clone().to_string())
+            .collect()
+    }
+}
+
+impl<'a> Sqlable for Select1<'a> {
+    fn execute(&self, state: &mut ComputeState) -> impl Iterator<Item = postgres::Row> {
+        let column_defs = self
+            .select_sql_expressions
+            .iter()
+            .map(|(key, value)| format!("{} AS {}", *value, *key))
+            .collect::<Vec<_>>();
+        let query_string = format!(
+            "SELECT {} FROM {}",
+            column_defs.join(", "),
+            self.source.table_name
+        );
+        state
+            .client
+            .query_raw(query_string.as_str(), Vec::<&str>::new())
+            .unwrap()
+            .iterator()
+            .map(|r| r.unwrap())
+    }
+
+    fn source_name(&self) -> String {
+        self.source.source_name()
+    }
+
+    fn selected_columns(&self) -> ColumnSelection {
+        ColumnSelection::Selected(
+            self.select_sql_expressions.iter()
+            .map(
+                |(k, v)| (k.to_string(), v.to_string()))
+            .collect())
+    }
+}
+
+struct RowReader<S: Sqlable, T: From<postgres::Row>> {
+    source: S,
+    _marker: std::marker::PhantomData<T>,
+}
+
+impl<S: Sqlable, T: From<postgres::Row>> RowReader<S, T> {
+    fn new(source: S) -> Self {
+        RowReader {
+            source,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<S: Sqlable, T: From<postgres::Row>> Flowable for RowReader<S, T> {
+    type Type = T;
+
+    fn compute(&self, state: &mut ComputeState) -> impl Iterator<Item = T> {
+        self.source.execute(state).map(|row| T::from(row))
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct TestTableRow {
+    id: i64,
     name: String,
 }
 
@@ -41,6 +161,14 @@ impl From<postgres::Row> for TestTableRow {
             name: row.get("name"),
         }
     }
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct OtherTestTableRow {
+    id: i64,
+
+    #[serde(rename = "the_name")]
+    name: String,
 }
 
 #[derive(Debug)]
@@ -79,21 +207,33 @@ impl<I, F: Flowable<Type = I>, O> Flowable for Project<I, F, O> {
 }
 
 #[derive(Debug)]
-struct Select<I: Partial<Item = O>, F: Flowable<Type = I>, O> {
-    input: F,
-    selecting: fn(I) -> O,
+struct Select<'a, O: Default + Serialize + From<postgres::Row>> {
+    source: TableData<'a, O>, // TODO: rather than store a TableData, store a generic bound ColumnSelectable trait
 }
 
-impl<I: Partial<Item = O>, F: Flowable<Type = I>, O> Flowable for Select<I, F, O> {
+impl<'a, O: Default + Serialize + From<postgres::Row>> Select<'a, O> {
+    // TODO: rather than pass a TableData as input, pass a generic bound ColumnSelectable trait
+
+    fn new<I: Default + Serialize>(
+        input: TableData<'a, I>,
+        select_sql_expressions: HashMap<&'a str, &'a str>,
+    ) -> Self {
+        Self {
+            source: input.select_columns(select_sql_expressions),
+        }
+    }
+}
+
+impl<'a, O: Default + Serialize + From<postgres::Row>> Flowable for Select<'a, O> {
     type Type = O;
 
     fn compute(&self, state: &mut ComputeState) -> impl Iterator<Item = O> {
-        self.input.compute(state).map(self.selecting)
+        self.source.compute(state)
     }
 }
 
 #[derive(Debug)]
-struct TableData<'a, R> {
+struct TableData<'a, R: Default + Serialize> {
     table_name: &'a str,
     _marker: std::marker::PhantomData<R>,
     field_names: Vec<String>,
@@ -108,9 +248,16 @@ impl<'a, R: Default + Serialize> TableData<'a, R> {
         }
     }
 
+    fn select_columns<O: Default + Serialize>(
+        &self,
+        column_selection: HashMap<&'a str, &'a str>,
+    ) -> TableData<'a, O> {
+        TableData::<'a, O>::new(self.table_name) // TODO: actually select the columns
+    }
+
     fn query_string(&self) -> String {
         format!(
-            "SELECT {} FROM {}",
+            "SELECT {} FROM {}", // TODO: sanitize
             self.field_names.join(", "),
             self.table_name
         )
@@ -149,16 +296,31 @@ fn get_field_names<T: Serialize + Default>() -> Vec<String> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Default, Debug, Serialize, Deserialize)]
 struct PartialTestRow {
     name: String,
 }
 
+impl From<TestTableRow> for PartialTestRow {
+    fn from(row: TestTableRow) -> Self {
+        PartialTestRow { name: row.name }
+    }
+}
+
+impl From<postgres::Row> for PartialTestRow {
+    fn from(row: postgres::Row) -> Self {
+        PartialTestRow {
+            name: row.get("name"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::any::Any;
+    use core::hash;
 
     use super::*;
+    use map_macro::hash_map;
 
     #[test]
     fn test_simple_flow() {
@@ -174,15 +336,9 @@ mod tests {
     }
 
     #[test]
-    fn test_simple_select() {
+    fn test_simple_select_compute() {
         let table1 = TableData::<TestTableRow>::new("students");
-        let query = Select {
-            input: table1,
-            selecting: |row| PartialTestTableRow {
-                name: Some(row.name),
-                ..Default::default()
-            },
-        };
+        let query = Select::<PartialTestRow>::new(table1, HashMap::new());
         let mut state = computed_state();
         query
             .compute(&mut state)
@@ -246,6 +402,11 @@ mod tests {
                 println!("{:?} is {:?}", name, obj);
             }
         }
+
+        let val2: ron::Value = ron::de::from_str(&serialized).unwrap();
+        let deconstructed: OtherTestTableRow = val2.into_rust().unwrap();
+        println!("Deconstructed {:?}", deconstructed);
+        assert_eq!(row, deconstructed);
     }
 
     fn get_db_client() -> Client {
@@ -256,5 +417,31 @@ mod tests {
         ComputeState {
             client: get_db_client(),
         }
+    }
+
+    #[test]
+    fn test_row_reader_from_table() {
+        let table1 = Table::new("students");
+        let row_reader = RowReader::<_, TestTableRow>::new(table1);
+        let mut state = computed_state();
+        row_reader
+            .compute(&mut state)
+            .for_each(|row| println!("{:?}", row));
+    }
+
+    #[test]
+    fn test_row_reader_from_select() {
+        let table1 = Table::new("students");
+        let row_reader = RowReader::<_, TestTableRow>::new(Select1::new(
+            table1,
+            hash_map! {
+                "id" => "id",
+                "name" => "concat(name, '-', cast(id as text))",
+            },
+        ));
+        let mut state = computed_state();
+        row_reader
+            .compute(&mut state)
+            .for_each(|row| println!("{:?}", row));
     }
 }

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+map-macro = "0.3.0"
 pair = "0.1.0"
 pairs = "0.1.0"
 partially = "0.2.1"
