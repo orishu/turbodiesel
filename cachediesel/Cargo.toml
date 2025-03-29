@@ -1,0 +1,14 @@
+[package]
+name = "cachediesel"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = "0.4.40"
+dateparser = "0.2.1"
+diesel = { version = "2.2.8", features = ["postgres"] }
+diesel-async = { version = "0.5.2", features = ["postgres"] }
+dotenvy = "0.15.7"
+julian = "0.7.0"
+lazy_static = "1.5.0"
+postgres = "0.19.10"
