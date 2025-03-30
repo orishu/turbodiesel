@@ -9,7 +9,15 @@ use dotenvy::dotenv;
 use std::collections::HashMap;
 use std::env;
 use std::hash::Hash;
+use std::marker::PhantomData;
 
+use diesel::backend::Backend;
+use diesel::connection::{Connection, DefaultLoadingMode, LoadConnection};
+use diesel::helper_types::Limit;
+use diesel::query_builder::{AsQuery, SelectStatement};
+use diesel::query_dsl::load_dsl::ExecuteDsl;
+use diesel::query_dsl::{LoadQuery, RunQueryDsl, methods};
+use diesel::result::QueryResult;
 use julian::{Calendar, Month, system2jdn};
 
 struct Cache<K: Eq + Hash, V> {
@@ -82,13 +90,69 @@ impl<'a, R, I: Iterator<Item = R>, K: Eq + Hash, V, C: Cacher<Key = K, Value = V
     }
 }
 
+struct SelectWrapper<T, U, B = DefaultLoadingMode> {
+    inner_select: T,
+    phantom_u: PhantomData<U>,
+    phantom_b: PhantomData<B>,
+}
+
+impl<T, U, B> SelectWrapper<T, U, B> {
+    fn new(inner_select: T) -> Self {
+        Self {
+            inner_select,
+            phantom_u: PhantomData,
+            phantom_b: PhantomData,
+        }
+    }
+}
+
+impl<T: ExecuteDsl<Conn>, Conn: Connection, U, B> ExecuteDsl<Conn, Conn::Backend>
+    for SelectWrapper<T, U, B>
+{
+    fn execute(query: Self, conn: &mut Conn) -> QueryResult<usize> {
+        ExecuteDsl::<Conn, Conn::Backend>::execute(query.inner_select, conn)
+    }
+}
+
+impl<T, Conn, U, B> RunQueryDsl<Conn> for SelectWrapper<T, U, B> {}
+
+impl<'query, T, Conn, U, B> LoadQuery<'query, Conn, U, B> for SelectWrapper<T, U, B>
+where
+    T: LoadQuery<'query, Conn, U, B>,
+    Conn: 'query,
+{
+    type RowIter<'a>
+        = T::RowIter<'a>
+    where
+        Conn: 'a;
+
+    fn internal_load(self, conn: &mut Conn) -> QueryResult<Self::RowIter<'_>> {
+        println!("In internal_load");
+        self.inner_select.internal_load(conn)
+    }
+}
+
+trait WrappableQuery<B = DefaultLoadingMode> {
+    fn wrap_query<U>(self) -> SelectWrapper<Self, U, B>
+    where
+        Self: Sized,
+    {
+        SelectWrapper::<Self, U, B>::new(self)
+    }
+}
+
+impl<B, From, Select, Distinct, Where, Order, LimitOffset, GroupBy, Having, Locking>
+    WrappableQuery<B>
+    for SelectStatement<From, Select, Distinct, Where, Order, LimitOffset, GroupBy, Having, Locking>
+{
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::SystemTime;
 
     use chrono::Utc;
     use diesel::RunQueryDsl;
-    use diesel::connection::DefaultLoadingMode;
 
     use crate::establish_connection;
     use crate::models::Student;
@@ -144,11 +208,20 @@ mod tests {
     #[test]
     fn simple_select_using_diesel() {
         let connection = &mut establish_connection();
-        let it = schema::students::dsl::students
-            .select(Student::as_select())
-            .load_iter::<Student, DefaultLoadingMode>(connection)
+        let select_statement = 
+            schema::students::dsl::students
+                .select(Student::as_select())
+                .filter(schema::students::dsl::id.gt(1));
+        let it = select_statement
+            .wrap_query::<Student>()
+            .load::<Student>(connection)
             .expect("load failed")
-            .map(Result::unwrap);
+            .into_iter();
+
+
+//            .load_iter::<Student, DefaultLoadingMode>(connection)
+//            .expect("load failed")
+//            .map(Result::unwrap);
 
         let mut cache = Cache::<i32, String>::new();
         let caching_it = CachingIterator::new(&mut cache, it, |r| (r.id, r.name.clone()));
