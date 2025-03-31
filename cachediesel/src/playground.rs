@@ -9,6 +9,7 @@ use dotenvy::dotenv;
 use std::collections::HashMap;
 use std::env;
 use std::hash::Hash;
+use std::iter::Map;
 use std::marker::PhantomData;
 
 use diesel::backend::Backend;
@@ -19,6 +20,7 @@ use diesel::query_dsl::load_dsl::ExecuteDsl;
 use diesel::query_dsl::{LoadQuery, RunQueryDsl, methods};
 use diesel::result::QueryResult;
 use julian::{Calendar, Month, system2jdn};
+use std::iter::Inspect;
 
 struct Cache<K: Eq + Hash, V> {
     map: HashMap<K, V>,
@@ -90,45 +92,91 @@ impl<'a, R, I: Iterator<Item = R>, K: Eq + Hash, V, C: Cacher<Key = K, Value = V
     }
 }
 
-struct SelectWrapper<T, U, B = DefaultLoadingMode> {
+struct SelectWrapper<'conn, Conn, T, U, B = DefaultLoadingMode>
+where
+    T: for<'query> LoadQuery<'query, Conn, U, B>,
+    Conn: LoadConnection<B> + 'conn,
+    U: std::fmt::Debug + 'conn,
+ {
     inner_select: T,
-    phantom_u: PhantomData<U>,
+    phantom_u: PhantomData<&'conn U>,
     phantom_b: PhantomData<B>,
+    phantom_c: PhantomData<&'conn Conn>,
 }
 
-impl<T, U, B> SelectWrapper<T, U, B> {
+impl<'conn, Conn, T, U, B> SelectWrapper<'conn, Conn, T, U, B>
+where
+    T: for<'query> LoadQuery<'query, Conn, U, B>,
+    Conn: LoadConnection<B> + 'conn,
+    U: std::fmt::Debug + 'conn,
+ {
     fn new(inner_select: T) -> Self {
         Self {
             inner_select,
             phantom_u: PhantomData,
             phantom_b: PhantomData,
+            phantom_c: PhantomData,
         }
     }
 }
 
-impl<T: ExecuteDsl<Conn>, Conn: Connection, U, B> ExecuteDsl<Conn, Conn::Backend>
-    for SelectWrapper<T, U, B>
+impl<'conn, Conn, T: ExecuteDsl<Conn>, U, B> ExecuteDsl<Conn, Conn::Backend>
+    for SelectWrapper<'conn, Conn, T, U, B>
+where
+    T: ExecuteDsl<Conn> + for<'query> LoadQuery<'query, Conn, U, B>,
+    Conn: LoadConnection<B> + 'conn,
+    U: std::fmt::Debug + 'conn,
 {
     fn execute(query: Self, conn: &mut Conn) -> QueryResult<usize> {
         ExecuteDsl::<Conn, Conn::Backend>::execute(query.inner_select, conn)
     }
 }
 
-impl<T, Conn, U, B> RunQueryDsl<Conn> for SelectWrapper<T, U, B> {}
-
-impl<'query, T, Conn, U, B> LoadQuery<'query, Conn, U, B> for SelectWrapper<T, U, B>
+impl<'conn, Conn, T, U, B> RunQueryDsl<Conn> for SelectWrapper<'conn, Conn, T, U, B>
 where
-    T: LoadQuery<'query, Conn, U, B>,
-    Conn: 'query,
+//    T: for<'query> LoadQuery<'query, Conn, U, B>,
+    T: for<'query> LoadQuery<'query, Conn, U, B> + RunQueryDsl<Conn>, // <-- Add this
+    Conn: LoadConnection<B> + 'conn,
+    U: std::fmt::Debug + 'conn,
+ {}
+
+impl<'query, 'conn, T, Conn, U, B> LoadQuery<'query, Conn, U, B> for SelectWrapper<'conn, Conn, T, U, B>
+where
+    T: LoadQuery<'query, Conn, U, B> + RunQueryDsl<Conn>,
+    Conn: LoadConnection<B> + 'conn,
+    U: std::fmt::Debug + 'conn,
 {
+    type RowIter<'a> = Box<dyn Iterator<Item = QueryResult<U>> + 'a>
+    where
+        Conn: 'a;
+
+    /*
     type RowIter<'a>
         = T::RowIter<'a>
     where
         Conn: 'a;
+        */
 
-    fn internal_load(self, conn: &mut Conn) -> QueryResult<Self::RowIter<'_>> {
+    fn internal_load(self, conn: &mut Conn) -> QueryResult<Self::RowIter<'_>>
+        where U: 'conn
+     {
         println!("In internal_load");
-        self.inner_select.internal_load(conn)
+        //self.inner_select.internal_load(conn)
+
+        let results: Vec<QueryResult<U>> = self.inner_select.internal_load(conn)?.collect();
+        Ok(Box::new(results.into_iter()))
+//        Ok(results)
+
+
+
+        /*/
+        let result = self.inner_select.internal_load(conn);
+        if let Ok(ref res) = result {
+            let cloned = res.by_ref().cloned();
+            cloned.for_each(|f| println!("Peeking: {:?}", f));
+        }
+        result
+        */
     }
 }
 
