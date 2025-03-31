@@ -91,33 +91,29 @@ impl<'a, R, I: Iterator<Item = R>, K: Eq + Hash, V, C: Cacher<Key = K, Value = V
     }
 }
 
-struct SelectWrapper<T, U, B = DefaultLoadingMode> {
+struct SelectWrapper<T> {
     inner_select: T,
-    phantom_u: PhantomData<U>,
-    phantom_b: PhantomData<B>,
 }
 
-impl<T, U, B> SelectWrapper<T, U, B> {
+impl<T> SelectWrapper<T> {
     fn new(inner_select: T) -> Self {
         Self {
             inner_select,
-            phantom_u: PhantomData,
-            phantom_b: PhantomData,
         }
     }
 }
 
-impl<T: ExecuteDsl<Conn>, Conn: Connection, U, B> ExecuteDsl<Conn, Conn::Backend>
-    for SelectWrapper<T, U, B>
+impl<T: ExecuteDsl<Conn>, Conn: Connection> ExecuteDsl<Conn, Conn::Backend>
+    for SelectWrapper<T>
 {
     fn execute(query: Self, conn: &mut Conn) -> QueryResult<usize> {
         ExecuteDsl::<Conn, Conn::Backend>::execute(query.inner_select, conn)
     }
 }
 
-impl<T, Conn, U, B> RunQueryDsl<Conn> for SelectWrapper<T, U, B> {}
+impl<T, Conn> RunQueryDsl<Conn> for SelectWrapper<T> {}
 
-impl<'query, T, Conn, U, B> LoadQuery<'query, Conn, U, B> for SelectWrapper<T, U, B>
+impl<'query, T, Conn, U, B> LoadQuery<'query, Conn, U, B> for SelectWrapper<T>
 where
     T: LoadQuery<'query, Conn, U, B>,
     Conn: 'query,
@@ -138,17 +134,17 @@ where
     }
 }
 
-trait WrappableQuery<B = DefaultLoadingMode> {
-    fn wrap_query<U>(self) -> SelectWrapper<Self, U, B>
+trait WrappableQuery {
+    fn wrap_query(self) -> SelectWrapper<Self>
     where
         Self: Sized,
     {
-        SelectWrapper::<Self, U, B>::new(self)
+        SelectWrapper::<Self>::new(self)
     }
 }
 
-impl<B, From, Select, Distinct, Where, Order, LimitOffset, GroupBy, Having, Locking>
-    WrappableQuery<B>
+impl<From, Select, Distinct, Where, Order, LimitOffset, GroupBy, Having, Locking>
+    WrappableQuery
     for SelectStatement<From, Select, Distinct, Where, Order, LimitOffset, GroupBy, Having, Locking>
 {
 }
@@ -219,7 +215,7 @@ mod tests {
                 .select(Student::as_select())
                 .filter(schema::students::dsl::id.gt(1));
         let it = select_statement
-            .wrap_query::<Student>()
+            .wrap_query()
             .load::<Student>(connection)
             .expect("load failed")
             .into_iter();
