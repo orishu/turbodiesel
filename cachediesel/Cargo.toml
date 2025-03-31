@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 chrono = "0.4.40"
 dateparser = "0.2.1"
-diesel = { version = "2.2.8", features = ["i-implement-a-third-party-backend-and-opt-into-breaking-changes", "postgres"] }
+diesel = { version = "2.2.8", features = ["postgres"] }
 diesel-async = { version = "0.5.2", features = ["postgres"] }
 dotenvy = "0.15.7"
 julian = "0.7.0"
