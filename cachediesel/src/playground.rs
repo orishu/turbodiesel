@@ -9,6 +9,7 @@ use dotenvy::dotenv;
 use std::collections::HashMap;
 use std::env;
 use std::hash::Hash;
+use std::iter::{Inspect, Map};
 use std::marker::PhantomData;
 
 use diesel::backend::Backend;
@@ -120,15 +121,20 @@ impl<'query, T, Conn, U, B> LoadQuery<'query, Conn, U, B> for SelectWrapper<T, U
 where
     T: LoadQuery<'query, Conn, U, B>,
     Conn: 'query,
+    U: std::fmt::Debug,
 {
-    type RowIter<'a>
-        = T::RowIter<'a>
+    type RowIter<'a> = Map<T::RowIter<'a>, fn(QueryResult<U>) -> QueryResult<U>>
     where
         Conn: 'a;
 
     fn internal_load(self, conn: &mut Conn) -> QueryResult<Self::RowIter<'_>> {
         println!("In internal_load");
-        self.inner_select.internal_load(conn)
+        Ok(self.inner_select.internal_load(conn)?.map(|r| {
+            if let Ok(ref one) = r {
+                println!("In map: {:?}", one);
+            }
+            r
+        }))
     }
 }
 
