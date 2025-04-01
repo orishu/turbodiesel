@@ -104,23 +104,36 @@ trait CachingStrategy {
     fn gen_key_value(&self, item: &Self::Item) -> (String, String);
 
     fn put_in_cache(&self, key: String, value: String);
+
+    fn put_item(&self, item: &Self::Item) {
+        let (key, value) = self.gen_key_value(item);
+        self.put_in_cache(key, value);
+    }
 }
 
-struct InMemoryCachingStrategy<U> {
+struct InMemoryCachingStrategy<U, F>
+where F: Fn(&U) -> (String, String),
+{
     cache: Rc<RefCell<StringCache>>,
-    key_value_func: fn(&U) -> (String, String),
+    key_value_func: F,
+    phantom_data: PhantomData<U>,
 }
 
-impl<U> InMemoryCachingStrategy<U> {
-    fn new(cache: Rc<RefCell<StringCache>>, key_value_func: fn(&U) -> (String, String)) -> Self {
+impl<U, F> InMemoryCachingStrategy<U, F> 
+where F: Fn(&U) -> (String, String),
+{
+    fn new(cache: Rc<RefCell<StringCache>>, key_value_func: F) -> Self {
         Self {
             cache,
             key_value_func,
+            phantom_data: PhantomData,
         }
     }
 }
 
-impl<U> CachingStrategy for InMemoryCachingStrategy<U> {
+impl<U, F> CachingStrategy for InMemoryCachingStrategy<U, F>
+where F: Fn(&U) -> (String, String),
+ {
     type Item = U;
     fn gen_key_value(&self, item: &Self::Item) -> (String, String) {
         (self.key_value_func)(item)
@@ -184,8 +197,7 @@ where
         let item = self.inner.next();
         if let Some(Ok(ref it)) = item {
             println!("Item is {:?}", it);
-            let (key, value) = self.caching_strategy.gen_key_value(it);
-            self.caching_strategy.put_in_cache(key, value);
+            self.caching_strategy.put_item(it);
         }
         item
     }
