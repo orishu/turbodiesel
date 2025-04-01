@@ -1,7 +1,7 @@
 use diesel::{Queryable, Selectable};
+use postgres::Client;
 use postgres::NoTls;
 use postgres::fallible_iterator::FallibleIterator;
-use postgres::{Client, Error};
 
 use diesel::pg::data_types::PgDate;
 use diesel::prelude::*;
@@ -20,6 +20,7 @@ use diesel::helper_types::Limit;
 use diesel::query_builder::{AsQuery, SelectStatement};
 use diesel::query_dsl::load_dsl::ExecuteDsl;
 use diesel::query_dsl::{LoadQuery, RunQueryDsl, methods};
+use diesel::result::Error;
 use diesel::result::QueryResult;
 use julian::{Calendar, Month, system2jdn};
 
@@ -101,26 +102,29 @@ impl<'a, R, I: Iterator<Item = R>, K: Eq + Hash, V, C: Cacher<Key = K, Value = V
 trait CachingStrategy {
     type Item;
 
-    fn gen_key_value(&self, item: &Self::Item) -> (String, String);
+    fn gen_key_value(&self, item: &QueryResult<Self::Item>) -> Option<(String, String)>;
 
     fn put_in_cache(&self, key: String, value: String);
 
-    fn put_item(&self, item: &Self::Item) {
-        let (key, value) = self.gen_key_value(item);
-        self.put_in_cache(key, value);
+    fn put_item(&self, item: &QueryResult<Self::Item>) {
+        if let Some((key, value)) = self.gen_key_value(item) {
+            self.put_in_cache(key, value);
+        }
     }
 }
 
 struct InMemoryCachingStrategy<U, F>
-where F: Fn(&U) -> (String, String),
+where
+    F: Fn(&QueryResult<U>) -> Option<(String, String)>,
 {
     cache: Rc<RefCell<StringCache>>,
     key_value_func: F,
     phantom_data: PhantomData<U>,
 }
 
-impl<U, F> InMemoryCachingStrategy<U, F> 
-where F: Fn(&U) -> (String, String),
+impl<U, F> InMemoryCachingStrategy<U, F>
+where
+    F: Fn(&QueryResult<U>) -> Option<(String, String)>,
 {
     fn new(cache: Rc<RefCell<StringCache>>, key_value_func: F) -> Self {
         Self {
@@ -132,10 +136,11 @@ where F: Fn(&U) -> (String, String),
 }
 
 impl<U, F> CachingStrategy for InMemoryCachingStrategy<U, F>
-where F: Fn(&U) -> (String, String),
- {
+where
+    F: Fn(&QueryResult<U>) -> Option<(String, String)>,
+{
     type Item = U;
-    fn gen_key_value(&self, item: &Self::Item) -> (String, String) {
+    fn gen_key_value(&self, item: &QueryResult<Self::Item>) -> Option<(String, String)> {
         (self.key_value_func)(item)
     }
     fn put_in_cache(&self, key: String, value: String) {
@@ -195,9 +200,9 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         let item = self.inner.next();
-        if let Some(Ok(ref it)) = item {
-            println!("Item is {:?}", it);
-            self.caching_strategy.put_item(it);
+        if let Some(ref it_res) = item {
+            println!("Item result is {:?}", it_res);
+            self.caching_strategy.put_item(it_res);
         }
         item
     }
@@ -233,6 +238,21 @@ trait WrappableQuery {
         C: CachingStrategy<Item = U> + 'a,
     {
         SelectWrapper::<Self, C, U>::new(self, caching)
+    }
+
+    fn cache_results<'a, U, F>(
+        self,
+        cache: Rc<RefCell<StringCache>>,
+        key_value_func: F,
+    ) -> SelectWrapper<Self, InMemoryCachingStrategy<U, F>, U>
+    where
+        Self: Sized,
+        F: Fn(&QueryResult<U>) -> Option<(String, String)>,
+    {
+        SelectWrapper::<Self, InMemoryCachingStrategy<U, F>, U>::new(
+            self,
+            InMemoryCachingStrategy::new(cache, key_value_func),
+        )
     }
 }
 
@@ -302,17 +322,16 @@ mod tests {
     #[test]
     fn simple_select_using_diesel() {
         let new_cache = Rc::new(RefCell::new(StringCache::new()));
-        let caching_strategy = InMemoryCachingStrategy::new(new_cache.clone(), |s: &Student| {
-            (s.id.to_string(), s.name.clone())
-        });
-
         let connection = &mut establish_connection();
         let select_statement = schema::students::dsl::students
             .select(Student::as_select())
             .filter(schema::students::dsl::id.gt(1));
         let it = select_statement
-            .wrap_query(caching_strategy)
-            .load::<Student>(connection)
+            .cache_results(new_cache.clone(), move |s: &QueryResult<Student>| match s {
+                Ok(s) => Some((s.id.to_string(), s.name.clone())),
+                Err(_) => None,
+            })
+            .load(connection)
             .expect("load failed")
             .into_iter();
 
