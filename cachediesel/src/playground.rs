@@ -69,44 +69,6 @@ impl<K: Eq + Hash, V> Cacher for Cache<K, V> {
     }
 }
 
-struct CachingIterator<'a, R, I: Iterator<Item = R>, K: Eq + Hash, V, C> {
-    inner_iter: I,
-
-    key_value_transform: fn(&R) -> (K, V),
-    cacher: &'a mut C,
-}
-
-impl<'a, R, I: Iterator<Item = R>, K: Eq + Hash, V, C: Cacher<Key = K, Value = V>>
-    CachingIterator<'a, R, I, K, V, C>
-{
-    fn new(
-        cacher: &'a mut C,
-        inner_iter: I,
-        key_value_transform: fn(&R) -> (K, V),
-    ) -> CachingIterator<'a, R, I, K, V, C> {
-        CachingIterator {
-            inner_iter,
-            key_value_transform,
-            cacher,
-        }
-    }
-}
-
-impl<'a, R, I: Iterator<Item = R>, K: Eq + Hash, V, C: Cacher<Key = K, Value = V>> Iterator
-    for CachingIterator<'a, R, I, K, V, C>
-{
-    type Item = R;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let item = self.inner_iter.next();
-        if let Some(ref rec) = item {
-            let (key, value) = (self.key_value_transform)(rec);
-            self.cacher.put(key, value);
-        }
-        item
-    }
-}
-
 trait CachingStrategy {
     type Item: Serialize;
 
