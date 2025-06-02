@@ -1,3 +1,9 @@
+use diesel::dsl::sql;
+use diesel::expression::QueryMetadata;
+use diesel::pg;
+use diesel::query_builder::{SelectClauseExpression, SelectQuery};
+use diesel::sql_types::SqlType;
+use diesel::sql_types::Text;
 use diesel::{Queryable, Selectable};
 use postgres::Client;
 use postgres::NoTls;
@@ -16,6 +22,7 @@ use std::rc::Rc;
 
 use diesel::backend::Backend;
 use diesel::connection::{Connection, DefaultLoadingMode, LoadConnection};
+use diesel::expression::SelectableExpression;
 use diesel::helper_types::Limit;
 use diesel::query_builder::{AsQuery, SelectStatement};
 use diesel::query_dsl::load_dsl::ExecuteDsl;
@@ -24,6 +31,7 @@ use diesel::result::Error;
 use diesel::result::QueryResult;
 use julian::{Calendar, Month, system2jdn};
 
+use crate::schema::students;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
@@ -113,6 +121,16 @@ trait CachingStrategy {
     }
 }
 
+trait CachingStrategy2 {
+    type Item: Serialize;
+
+    fn put_in_cache(&self, key: String, value: String);
+
+    fn put_item2(&self, key: &String, item: &Self::Item) {
+        self.put_in_cache(key.clone(), serde_json::to_string(item).unwrap());
+    }
+}
+
 struct InMemoryCachingStrategy<U, F>
 where
     F: Fn(&QueryResult<U>) -> Option<(String, String)>,
@@ -149,27 +167,71 @@ where
     }
 }
 
-struct SelectWrapper<T, C, U>
+struct InMemoryCachingStrategy2<U>
+where
+    U: Serialize,
+{
+    cache: Rc<RefCell<StringCache>>,
+    phantom_data: PhantomData<U>,
+}
+
+impl<U> InMemoryCachingStrategy2<U>
+where
+    U: Serialize,
+{
+    fn new(cache: Rc<RefCell<StringCache>>) -> Self {
+        Self {
+            cache,
+            phantom_data: PhantomData,
+        }
+    }
+}
+
+impl<U> CachingStrategy2 for InMemoryCachingStrategy2<U>
+where
+    U: Serialize,
+{
+    type Item = U;
+
+    fn put_in_cache(&self, key: String, value: String) {
+        let mut c = self.cache.borrow_mut();
+        c.put(key, value);
+    }
+}
+
+struct SelectWrapper<T, C, U, ST>
 where
     C: for<'a> CachingStrategy<Item = U>,
 {
     inner_select: T,
     caching: C,
+    key_gen_func: fn(&ST) -> Option<(String, String)>,
 }
 
-impl<'a, T, C, U> SelectWrapper<T, C, U>
+impl<'a, T, C, U, ST> SelectWrapper<T, C, U, ST>
 where
     C: CachingStrategy<Item = U>,
 {
-    fn new(inner_select: T, caching: C) -> Self {
+    fn new(inner_select: T, caching: C, key_gen_func: fn(&ST) -> Option<(String, String)>) -> Self {
         Self {
             inner_select,
             caching,
+            key_gen_func,
         }
+    }
+
+    fn get_key<DB, Expr>(&self) -> String
+    where
+        DB: Backend,
+        Expr: Expression,
+        T: Selectable<DB, SelectExpression = Expr>,
+    {
+        "!".to_string()
     }
 }
 
-impl<T: ExecuteDsl<Conn>, Conn, C, U> ExecuteDsl<Conn, Conn::Backend> for SelectWrapper<T, C, U>
+impl<T: ExecuteDsl<Conn>, Conn, C, U, ST> ExecuteDsl<Conn, Conn::Backend>
+    for SelectWrapper<T, C, U, ST>
 where
     Conn: Connection,
     C: CachingStrategy<Item = U>,
@@ -179,7 +241,10 @@ where
     }
 }
 
-impl<T, Conn, C, U> RunQueryDsl<Conn> for SelectWrapper<T, C, U> where C: CachingStrategy<Item = U> {}
+impl<T, Conn, C, U, ST> RunQueryDsl<Conn> for SelectWrapper<T, C, U, ST> where
+    C: CachingStrategy<Item = U>
+{
+}
 
 struct ResultCachingIterator<I, U, C>
 where
@@ -208,7 +273,38 @@ where
     }
 }
 
-impl<'query, T, Conn, U, B, C> LoadQuery<'query, Conn, U, B> for SelectWrapper<T, C, U>
+struct ResultCachingIterator2<I, U, C>
+where
+    I: Iterator<Item = QueryResult<(U, String)>>,
+    C: CachingStrategy2<Item = U>,
+    U: Serialize,
+{
+    inner: I,
+    caching_strategy: C,
+}
+
+impl<I, U, C> Iterator for ResultCachingIterator2<I, U, C>
+where
+    I: Iterator<Item = QueryResult<(U, String)>>,
+    C: CachingStrategy2<Item = U>,
+    U: Serialize,
+{
+    type Item = QueryResult<(U, String)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = self.inner.next();
+        if let Some(ref it_res) = item {
+            //println!("Item result is {:?}", it_res);
+            if let Ok(it) = it_res {
+                self.caching_strategy.put_item2(&it.1, &it.0);
+                println!("Item cached (2)");
+            }
+        }
+        item
+    }
+}
+
+impl<'query, T, Conn, U, B, C, ST> LoadQuery<'query, Conn, U, B> for SelectWrapper<T, C, U, ST>
 where
     T: LoadQuery<'query, Conn, U, B>,
     Conn: 'query,
@@ -222,6 +318,8 @@ where
 
     fn internal_load(self, conn: &mut Conn) -> QueryResult<Self::RowIter<'_>> {
         println!("In internal_load");
+        //self.inner_select
+
         let load_iter = self.inner_select.internal_load(conn)?;
         let caching_iter = ResultCachingIterator {
             inner: load_iter,
@@ -231,34 +329,147 @@ where
     }
 }
 
+struct SelectWrapper2<T, C, U>
+where
+    U: Serialize,
+    C: CachingStrategy2<Item = U>,
+{
+    inner_select: T,
+    caching: C,
+}
+
+impl<T, C, U> SelectWrapper2<T, C, U>
+where
+    U: Serialize,
+    C: CachingStrategy2<Item = U>,
+{
+    fn new(inner_select: T, caching: C) -> Self {
+        Self {
+            inner_select,
+            caching,
+        }
+    }
+}
+
+impl<T: ExecuteDsl<Conn>, Conn, C, U> ExecuteDsl<Conn, Conn::Backend> for SelectWrapper2<T, C, U>
+where
+    Conn: Connection,
+    U: Serialize,
+    C: CachingStrategy2<Item = U>,
+{
+    fn execute(query: Self, conn: &mut Conn) -> QueryResult<usize> {
+        ExecuteDsl::<Conn, Conn::Backend>::execute(query.inner_select, conn)
+    }
+}
+
+impl<T, Conn, C, U> RunQueryDsl<Conn> for SelectWrapper2<T, C, U>
+where
+    C: CachingStrategy2<Item = U>,
+    U: Serialize,
+{
+}
+
+impl<'query, T, Conn, U, B, C> LoadQuery<'query, Conn, (U, String), B> for SelectWrapper2<T, C, U>
+where
+    T: LoadQuery<'query, Conn, (U, String), B>,
+    Conn: 'query,
+    U: Serialize,
+    C: CachingStrategy2<Item = U>,
+{
+    type RowIter<'a>
+        = ResultCachingIterator2<T::RowIter<'a>, U, C>
+    where
+        Conn: 'a;
+
+    fn internal_load(self, conn: &mut Conn) -> QueryResult<Self::RowIter<'_>> {
+        println!("In internal_load (2)");
+
+        let load_iter = self.inner_select.internal_load(conn)?;
+        let caching_iter  = ResultCachingIterator2 {
+            inner: load_iter,
+            caching_strategy: self.caching,
+        };
+        Ok(caching_iter)
+    }
+}
+
+
 trait WrappableQuery {
-    fn wrap_query<'a, C, U>(self, caching: C) -> SelectWrapper<Self, C, U>
+    fn wrap_query<'a, C, U, ST>(
+        self,
+        caching: C,
+        key_value_func: fn(&ST) -> Option<(String, String)>,
+    ) -> SelectWrapper<Self, C, U, ST>
     where
         Self: Sized,
         C: CachingStrategy<Item = U> + 'a,
     {
-        SelectWrapper::<Self, C, U>::new(self, caching)
+        SelectWrapper::<Self, C, U, ST>::new(self, caching, key_value_func)
     }
 
-    fn cache_results<'a, U, F>(
+    fn cache_results<'a, U, F, ST>(
         self,
         cache: Rc<RefCell<StringCache>>,
         key_value_func: F,
-    ) -> SelectWrapper<Self, InMemoryCachingStrategy<U, F>, U>
+        key_gen_func: fn(&ST) -> Option<(String, String)>,
+    ) -> SelectWrapper<Self, InMemoryCachingStrategy<U, F>, U, ST>
     where
         Self: Sized,
         F: Fn(&QueryResult<U>) -> Option<(String, String)>,
     {
-        SelectWrapper::<Self, InMemoryCachingStrategy<U, F>, U>::new(
+        SelectWrapper::<Self, InMemoryCachingStrategy<U, F>, U, ST>::new(
             self,
             InMemoryCachingStrategy::new(cache, key_value_func),
+            key_gen_func,
         )
+    }
+}
+
+trait WrappableQuery2 {
+    fn cache_results2<U>(
+        self,
+        cache: Rc<RefCell<StringCache>>,
+    ) -> SelectWrapper2<Self, InMemoryCachingStrategy2<U>, U>
+    where
+        Self: Sized,
+        U: Serialize,
+    {
+        SelectWrapper2::new(self, InMemoryCachingStrategy2::new(cache))
     }
 }
 
 impl<From, Select, Distinct, Where, Order, LimitOffset, GroupBy, Having, Locking> WrappableQuery
     for SelectStatement<From, Select, Distinct, Where, Order, LimitOffset, GroupBy, Having, Locking>
 {
+    /*
+    let select_statement2: SelectStatement<FromClause<table>, SelectClause<SelectBy<Student, {unknown}>>, NoDistinctClause, WhereClause<Grouped<Gt<id, Bound<Integer, i32>>>>>
+     */
+}
+
+impl<From, Select, Distinct, Where, Order, LimitOffset, GroupBy, Having, Locking> WrappableQuery2
+    for SelectStatement<From, Select, Distinct, Where, Order, LimitOffset, GroupBy, Having, Locking>
+{
+}
+
+trait ExperimentTrait {
+    type Expr;
+
+    fn columns(&self) -> Vec<String>;
+}
+
+impl<From, Select, Distinct, Where, Order, LimitOffset, GroupBy, Having, Locking> ExperimentTrait
+    for SelectStatement<From, Select, Distinct, Where, Order, LimitOffset, GroupBy, Having, Locking>
+where
+    Select: SelectClauseExpression<From>,
+{
+    type Expr = Select::Selection;
+
+    fn columns(&self) -> Vec<String> {
+        Vec::new()
+        //        self.
+        //       self
+        //      .default_selection().iter().map(|x| x.to_string()).collect()
+    }
 }
 
 #[cfg(test)]
@@ -266,7 +477,11 @@ mod tests {
     use std::time::SystemTime;
 
     use chrono::Utc;
+    //use diesel::query_dsl::methods::SelectDsl;
     use diesel::RunQueryDsl;
+    use diesel::expression::AsExpression;
+    use diesel::pg::Pg;
+    use diesel::query_builder::QueryFragment;
 
     use crate::establish_connection;
     use crate::models::Student;
@@ -322,15 +537,51 @@ mod tests {
     #[test]
     fn simple_select_using_diesel() {
         let new_cache = Rc::new(RefCell::new(StringCache::new()));
+        let student_row = (students::dsl::id, students::dsl::name, students::dsl::dob);
+        let row_with_cache_key = (student_row, sql::<Text>("'student:' || id"));
+
+        let connection = &mut establish_connection();
+        schema::students::dsl::students
+            .select(row_with_cache_key)
+            .filter(schema::students::dsl::id.eq(2))
+            .cache_results2(new_cache.clone())
+            .load_iter::<((i32, String, Option<pg::data_types::PgDate>), String), DefaultLoadingMode>(
+                connection,
+            )
+            .expect("Error loading student")
+            .for_each(|student| {
+                println!("Student: {:?}", student.unwrap());
+            });
+
+        println!("New cache: {:?}", new_cache);
+    }
+
+    #[test]
+    fn simple_select_using_diesel2() {
+        let new_cache = Rc::new(RefCell::new(StringCache::new()));
         let connection = &mut establish_connection();
         let select_statement = schema::students::dsl::students
-            .select(Student::as_select())
-            .filter(schema::students::dsl::id.gt(1));
+            //.select(Student::as_select())
+            .select((
+                (
+                    schema::students::dsl::id,
+                    schema::students::dsl::name,
+                    schema::students::dsl::dob,
+                ),
+                (schema::students::dsl::id, schema::students::dsl::name),
+            ))
+            .filter(schema::students::dsl::id.eq(1));
         let it = select_statement
-            .cache_results(new_cache.clone(), move |s: &QueryResult<Student>| match s {
-                Ok(s) => Some((s.id.to_string(), s.name.clone())),
-                Err(_) => None,
-            })
+            .cache_results::<((i32, String, Option<pg::data_types::PgDate>), (i32, String)), _, _>(
+                new_cache.clone(),
+                move |s| match s {
+                    Ok(((id, name, dob), (id2, name2))) => Some((id2.to_string(), name2.clone())),
+                    Err(_) => None,
+                },
+                |fields: &(schema::students::dsl::id, schema::students::dsl::name)| {
+                    Some(("hello".to_string(), "world".to_string()))
+                },
+            )
             .load(connection)
             .expect("load failed")
             .into_iter();
@@ -339,8 +590,22 @@ mod tests {
         //            .expect("load failed")
         //            .map(Result::unwrap);
 
+        //let select_statement2 = schema::students::dsl::students
+        //    .select(Student::as_select())
+        //    .filter(schema::students::dsl::id.gt(1));
+        //QueryMetadata<select_statement2.select.0.selection>
+        //    .row_metadata(&mut connection.metadata(), &mut Vec::new());
+
+        //select_statement2.select.0; //.selection;
+        //select_statement2.select.0.walk_ast(pass)
+        //let mut out = &mut Vec::new();
+        //Pg::row_metadata(&mut select_statement2.select.0, out);
+
+        //let qm = QueryMetadata::row_metadata(schema::students::dsl::dob, &mut Vec::new());
+        //select_statement2.load(connection).expect("load failed");
+
         let mut cache = Cache::<i32, String>::new();
-        let caching_it = CachingIterator::new(&mut cache, it, |r| (r.id, r.name.clone()));
+        let caching_it = CachingIterator::new(&mut cache, it, |r| (r.0.0, r.0.1.clone()));
         caching_it.for_each(|x| println!("{:?}", x));
 
         println!("Cached student 1: {:?}", cache.get(&1));
