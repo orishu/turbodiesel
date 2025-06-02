@@ -287,20 +287,20 @@ impl<I, U, C> Iterator for ResultCachingIterator2<I, U, C>
 where
     I: Iterator<Item = QueryResult<(U, String)>>,
     C: CachingStrategy2<Item = U>,
-    U: Serialize,
+    U: Serialize + std::fmt::Debug,
 {
-    type Item = QueryResult<(U, String)>;
+    type Item = QueryResult<U>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let item = self.inner.next();
         if let Some(ref it_res) = item {
-            //println!("Item result is {:?}", it_res);
+            println!("Item result is {:?}", it_res);
             if let Ok(it) = it_res {
                 self.caching_strategy.put_item2(&it.1, &it.0);
                 println!("Item cached (2)");
             }
         }
-        item
+        item.map(|r| r.map(|pair| pair.0))
     }
 }
 
@@ -369,11 +369,11 @@ where
 {
 }
 
-impl<'query, T, Conn, U, B, C> LoadQuery<'query, Conn, (U, String), B> for SelectWrapper2<T, C, U>
+impl<'query, T, Conn, U, B, C> LoadQuery<'query, Conn, U, B> for SelectWrapper2<T, C, U>
 where
     T: LoadQuery<'query, Conn, (U, String), B>,
     Conn: 'query,
-    U: Serialize,
+    U: Serialize + std::fmt::Debug,
     C: CachingStrategy2<Item = U>,
 {
     type RowIter<'a>
@@ -385,14 +385,13 @@ where
         println!("In internal_load (2)");
 
         let load_iter = self.inner_select.internal_load(conn)?;
-        let caching_iter  = ResultCachingIterator2 {
+        let caching_iter = ResultCachingIterator2 {
             inner: load_iter,
             caching_strategy: self.caching,
         };
         Ok(caching_iter)
     }
 }
-
 
 trait WrappableQuery {
     fn wrap_query<'a, C, U, ST>(
@@ -486,7 +485,7 @@ mod tests {
     use crate::establish_connection;
     use crate::models::Student;
     use crate::schema;
-    use crate::schema::students;
+    use crate::schema::students::{self, dob};
     use lazy_static::lazy_static;
 
     use super::*;
@@ -537,17 +536,15 @@ mod tests {
     #[test]
     fn simple_select_using_diesel() {
         let new_cache = Rc::new(RefCell::new(StringCache::new()));
-        let student_row = (students::dsl::id, students::dsl::name, students::dsl::dob);
-        let row_with_cache_key = (student_row, sql::<Text>("'student:' || id"));
+        //        let student_row = (students::dsl::id, students::dsl::name, students::dsl::dob);
+        let row_with_cache_key = (Student::as_select(), sql::<Text>("'student:' || id"));
 
         let connection = &mut establish_connection();
-        schema::students::dsl::students
+        students::dsl::students
             .select(row_with_cache_key)
             .filter(schema::students::dsl::id.eq(2))
             .cache_results2(new_cache.clone())
-            .load_iter::<((i32, String, Option<pg::data_types::PgDate>), String), DefaultLoadingMode>(
-                connection,
-            )
+            .load_iter::<Student, DefaultLoadingMode>(connection)
             .expect("Error loading student")
             .for_each(|student| {
                 println!("Student: {:?}", student.unwrap());
@@ -575,7 +572,7 @@ mod tests {
             .cache_results::<((i32, String, Option<pg::data_types::PgDate>), (i32, String)), _, _>(
                 new_cache.clone(),
                 move |s| match s {
-                    Ok(((id, name, dob), (id2, name2))) => Some((id2.to_string(), name2.clone())),
+                    Ok(((id, name, dob2), (id2, name2))) => Some((id2.to_string(), name2.clone())),
                     Err(_) => None,
                 },
                 |fields: &(schema::students::dsl::id, schema::students::dsl::name)| {
