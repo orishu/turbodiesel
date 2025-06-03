@@ -154,57 +154,61 @@ where
     }
 }
 
-struct ResultCacheLookupIterator<I, U, C>
+struct ResultCacheLookupIterator<I, U, C, K>
 where
     I: Iterator<Item = QueryResult<U>>,
     C: CachingStrategy<Item = U>,
     U: Serialize + DeserializeOwned,
+    K: Iterator<Item = String>,
 {
     inner: I,
-    key: String,
+    keys: K,
     caching_strategy: C,
-    used: bool,
 }
 
-impl<I, U, C> ResultCacheLookupIterator<I, U, C>
+impl<I, U, C, K> ResultCacheLookupIterator<I, U, C, K>
 where
     I: Iterator<Item = QueryResult<U>>,
     C: CachingStrategy<Item = U>,
     U: Serialize + DeserializeOwned,
+    K: Iterator<Item = String>,
 {
-    fn new<'a>(inner: I, key: &'a str, caching_strategy: C) -> Self {
-        ResultCacheLookupIterator {
+    fn new(inner: I, caching_strategy: C, keys: K) -> Self {
+        Self {
             inner,
-            key: key.to_string(),
+            keys,
             caching_strategy,
-            used: false,
         }
     }
 }
 
-impl<I, U, C> Iterator for ResultCacheLookupIterator<I, U, C>
+impl<I, U, C, K> Iterator for ResultCacheLookupIterator<I, U, C, K>
 where
     I: Iterator<Item = QueryResult<U>>,
     C: CachingStrategy<Item = U>,
     U: Serialize + DeserializeOwned + std::fmt::Debug,
+    K: Iterator<Item = String>,
 {
     type Item = QueryResult<U>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.used {
-            true => None,
-            false => match self.caching_strategy.get_item(&self.key) {
-                Some(cached_val) => {
-                    println!("Cache hit for key: {}", self.key);
-                    self.used = true;
-                    Some(Ok(cached_val))
+        let key = self.keys.next()?;
+        match self.caching_strategy.get_item(&key) {
+            Some(cached_val) => {
+                println!("Cache hit for key: {}", key);
+                Some(Ok(cached_val))
+            }
+            None => {
+                println!("Cache miss for key: {}, reading from inner", key);
+                match self.inner.next() {
+                    Some(Ok(val)) => {
+                        self.caching_strategy.put_item(&key, &val);
+                        Some(Ok(val))
+                    }
+                    Some(Err(e)) => Some(Err(e)),
+                    None => None,
                 }
-                None => {
-                    println!("Cache miss for key: {}", self.key);
-                    self.used = true;
-                    self.inner.next()
-                }
-            },
+            }
         }
     }
 }
@@ -274,59 +278,64 @@ where
     }
 }
 
-struct SelectCacheReadWrapper<'a, T, C, U>
+struct SelectCacheReadWrapper<T, C, U, K>
 where
     U: Serialize,
     C: CachingStrategy<Item = U>,
+    K: Iterator<Item = String>,
 {
     inner_select: T,
-    key: &'a str,
+    keys: K,
     caching: C,
 }
 
-impl<'a, T, C, U> SelectCacheReadWrapper<'a, T, C, U>
+impl<T, C, U, K> SelectCacheReadWrapper<T, C, U, K>
 where
     U: Serialize,
     C: CachingStrategy<Item = U>,
+    K: Iterator<Item = String>,
 {
-    fn new(inner_select: T, key: &'a str, caching: C) -> Self {
+    fn new(inner_select: T, keys: K, caching: C) -> Self {
         Self {
             inner_select,
-            key,
+            keys,
             caching,
         }
     }
 }
 
-impl<'a, T, Conn, C, U> ExecuteDsl<Conn, Conn::Backend> for SelectCacheReadWrapper<'a, T, C, U>
+impl<T, Conn, C, U, K> ExecuteDsl<Conn, Conn::Backend> for SelectCacheReadWrapper<T, C, U, K>
 where
     T: ExecuteDsl<Conn>,
     Conn: Connection,
     U: Serialize,
     C: CachingStrategy<Item = U>,
+    K: Iterator<Item = String>,
 {
     fn execute(query: Self, conn: &mut Conn) -> QueryResult<usize> {
         ExecuteDsl::<Conn, Conn::Backend>::execute(query.inner_select, conn)
     }
 }
 
-impl<'a, T, Conn, C, U> RunQueryDsl<Conn> for SelectCacheReadWrapper<'a, T, C, U>
+impl<T, Conn, C, U, K> RunQueryDsl<Conn> for SelectCacheReadWrapper<T, C, U, K>
 where
     C: CachingStrategy<Item = U>,
     U: Serialize,
+    K: Iterator<Item = String>,
 {
 }
 
-impl<'key, 'query, T, Conn, U, B, C> LoadQuery<'query, Conn, U, B>
-    for SelectCacheReadWrapper<'key, T, C, U>
+impl<'query, T, Conn, U, B, C, K> LoadQuery<'query, Conn, U, B>
+    for SelectCacheReadWrapper<T, C, U, K>
 where
     T: LoadQuery<'query, Conn, U, B>,
     Conn: 'query,
     U: Serialize + DeserializeOwned + std::fmt::Debug,
     C: CachingStrategy<Item = U>,
+    K: Iterator<Item = String>,
 {
     type RowIter<'a>
-        = ResultCacheLookupIterator<T::RowIter<'a>, U, C>
+        = ResultCacheLookupIterator<T::RowIter<'a>, U, C, K>
     where
         Conn: 'a;
 
@@ -334,7 +343,7 @@ where
         println!("In internal_load (1)");
 
         let load_iter = self.inner_select.internal_load(conn)?;
-        let lookup_iter = ResultCacheLookupIterator::new(load_iter, self.key, self.caching);
+        let lookup_iter = ResultCacheLookupIterator::new(load_iter, self.caching, self.keys);
         Ok(lookup_iter)
     }
 }
@@ -351,16 +360,38 @@ trait WrappableQuery {
         SelectCachingWrapper::new(self, InMemoryCachingStrategy::new(cache))
     }
 
-    fn use_cache_single<'a, U>(
+    fn use_cache_key<'a, U>(
         self,
         cache: Rc<RefCell<StringCache>>,
         key: &'a str,
-    ) -> SelectCacheReadWrapper<'a, Self, InMemoryCachingStrategy<U>, U>
+    ) -> SelectCacheReadWrapper<
+        Self,
+        InMemoryCachingStrategy<U>,
+        U,
+        <Vec<String> as IntoIterator>::IntoIter,
+    >
     where
         Self: Sized,
         U: Serialize + DeserializeOwned,
     {
-        SelectCacheReadWrapper::new(self, key, InMemoryCachingStrategy::new(cache))
+        SelectCacheReadWrapper::new(
+            self,
+            vec![key.to_string()].into_iter(),
+            InMemoryCachingStrategy::new(cache),
+        )
+    }
+
+    fn use_cache_keys<U, K>(
+        self,
+        cache: Rc<RefCell<StringCache>>,
+        keys: K,
+    ) -> SelectCacheReadWrapper<Self, InMemoryCachingStrategy<U>, U, K>
+    where
+        Self: Sized,
+        U: Serialize + DeserializeOwned,
+        K: Iterator<Item = String>,
+    {
+        SelectCacheReadWrapper::new(self, keys, InMemoryCachingStrategy::new(cache))
     }
 }
 
@@ -452,8 +483,12 @@ mod tests {
 
         students::dsl::students
             .select(Student::as_select())
-            .filter(schema::students::dsl::id.eq(2))
-            .use_cache_single(new_cache.clone(), "student:2")
+            .filter(schema::students::dsl::id.eq_any(vec![1, 2]))
+            .use_cache_key(new_cache.clone(), "student:2")
+            //            .use_cache_keys(
+            //                new_cache.clone(),
+            //                vec!["student:1".to_string(), "student:2".to_string()].into_iter(),
+            //            )
             .load_iter::<Student, DefaultLoadingMode>(connection)
             .expect("Error loading student")
             .for_each(|student| {
