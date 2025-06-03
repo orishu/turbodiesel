@@ -142,7 +142,32 @@ where
     }
 }
 
-struct SelectWrapper<T, C, U>
+struct ResultCacheLookupIterator<'a, I, U, C>
+where
+    I: Iterator<Item = QueryResult<U>>,
+    C: CachingStrategy<Item = U>,
+    U: Serialize,
+{
+    inner: I,
+    key: &'a str,
+    caching_strategy: C,
+}
+
+impl<'a, I, U, C> Iterator for ResultCacheLookupIterator<'a, I, U, C>
+where
+    I: Iterator<Item = QueryResult<U>>,
+    C: CachingStrategy<Item = U>,
+    U: Serialize + std::fmt::Debug,
+{
+    type Item = QueryResult<U>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // TODO: implement this method to look up in cache and return result if found
+        self.inner.next()
+    }
+}
+
+struct SelectCachingWrapper<T, C, U>
 where
     U: Serialize,
     C: CachingStrategy<Item = U>,
@@ -151,7 +176,7 @@ where
     caching: C,
 }
 
-impl<T, C, U> SelectWrapper<T, C, U>
+impl<T, C, U> SelectCachingWrapper<T, C, U>
 where
     U: Serialize,
     C: CachingStrategy<Item = U>,
@@ -164,8 +189,9 @@ where
     }
 }
 
-impl<T: ExecuteDsl<Conn>, Conn, C, U> ExecuteDsl<Conn, Conn::Backend> for SelectWrapper<T, C, U>
+impl<T, Conn, C, U> ExecuteDsl<Conn, Conn::Backend> for SelectCachingWrapper<T, C, U>
 where
+    T: ExecuteDsl<Conn>,
     Conn: Connection,
     U: Serialize,
     C: CachingStrategy<Item = U>,
@@ -175,14 +201,14 @@ where
     }
 }
 
-impl<T, Conn, C, U> RunQueryDsl<Conn> for SelectWrapper<T, C, U>
+impl<T, Conn, C, U> RunQueryDsl<Conn> for SelectCachingWrapper<T, C, U>
 where
     C: CachingStrategy<Item = U>,
     U: Serialize,
 {
 }
 
-impl<'query, T, Conn, U, B, C> LoadQuery<'query, Conn, U, B> for SelectWrapper<T, C, U>
+impl<'query, T, Conn, U, B, C> LoadQuery<'query, Conn, U, B> for SelectCachingWrapper<T, C, U>
 where
     T: LoadQuery<'query, Conn, (U, String), B>,
     Conn: 'query,
@@ -206,16 +232,97 @@ where
     }
 }
 
+struct SelectCacheReadWrapper<'a, T, C, U>
+where
+    U: Serialize,
+    C: CachingStrategy<Item = U>,
+{
+    inner_select: T,
+    key: &'a str,
+    caching: C,
+}
+
+impl<'a, T, C, U> SelectCacheReadWrapper<'a, T, C, U>
+where
+    U: Serialize,
+    C: CachingStrategy<Item = U>,
+{
+    fn new(inner_select: T, key: &'a str, caching: C) -> Self {
+        Self {
+            inner_select,
+            key,
+            caching,
+        }
+    }
+}
+
+impl<'a, T, Conn, C, U> ExecuteDsl<Conn, Conn::Backend> for SelectCacheReadWrapper<'a, T, C, U>
+where
+    T: ExecuteDsl<Conn>,
+    Conn: Connection,
+    U: Serialize,
+    C: CachingStrategy<Item = U>,
+{
+    fn execute(query: Self, conn: &mut Conn) -> QueryResult<usize> {
+        ExecuteDsl::<Conn, Conn::Backend>::execute(query.inner_select, conn)
+    }
+}
+
+impl<'a, T, Conn, C, U> RunQueryDsl<Conn> for SelectCacheReadWrapper<'a, T, C, U>
+where
+    C: CachingStrategy<Item = U>,
+    U: Serialize,
+{
+}
+
+impl<'key, 'query, T, Conn, U, B, C> LoadQuery<'query, Conn, U, B>
+    for SelectCacheReadWrapper<'key, T, C, U>
+where
+    T: LoadQuery<'query, Conn, U, B>,
+    Conn: 'query,
+    U: Serialize + std::fmt::Debug,
+    C: CachingStrategy<Item = U>,
+{
+    type RowIter<'a>
+        = ResultCacheLookupIterator<'key, T::RowIter<'a>, U, C>
+    where
+        Conn: 'a;
+
+    fn internal_load(self, conn: &mut Conn) -> QueryResult<Self::RowIter<'_>> {
+        println!("In internal_load (1)");
+
+        let load_iter = self.inner_select.internal_load(conn)?;
+        let lookup_iter = ResultCacheLookupIterator {
+            inner: load_iter,
+            key: self.key,
+            caching_strategy: self.caching,
+        };
+        Ok(lookup_iter)
+    }
+}
+
 trait WrappableQuery {
     fn cache_results<U>(
         self,
         cache: Rc<RefCell<StringCache>>,
-    ) -> SelectWrapper<Self, InMemoryCachingStrategy<U>, U>
+    ) -> SelectCachingWrapper<Self, InMemoryCachingStrategy<U>, U>
     where
         Self: Sized,
         U: Serialize,
     {
-        SelectWrapper::new(self, InMemoryCachingStrategy::new(cache))
+        SelectCachingWrapper::new(self, InMemoryCachingStrategy::new(cache))
+    }
+
+    fn use_cache<'a, U>(
+        self,
+        cache: Rc<RefCell<StringCache>>,
+        key: &'a str,
+    ) -> SelectCacheReadWrapper<'a, Self, InMemoryCachingStrategy<U>, U>
+    where
+        Self: Sized,
+        U: Serialize,
+    {
+        SelectCacheReadWrapper::new(self, key, InMemoryCachingStrategy::new(cache))
     }
 }
 
@@ -297,6 +404,16 @@ mod tests {
             .select(row_with_cache_key)
             .filter(schema::students::dsl::id.eq(2))
             .cache_results(new_cache.clone())
+            .load_iter::<Student, DefaultLoadingMode>(connection)
+            .expect("Error loading student")
+            .for_each(|student| {
+                println!("Student: {:?}", student.unwrap());
+            });
+
+        students::dsl::students
+            .select(Student::as_select())
+            .filter(schema::students::dsl::id.eq(2))
+            .use_cache(new_cache.clone(), "student:2")
             .load_iter::<Student, DefaultLoadingMode>(connection)
             .expect("Error loading student")
             .for_each(|student| {
