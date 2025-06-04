@@ -1,40 +1,13 @@
-use diesel::dsl::sql;
-use diesel::expression::QueryMetadata;
-use diesel::pg;
-use diesel::query_builder::{SelectClauseExpression, SelectQuery};
-use diesel::sql_types::SqlType;
-use diesel::sql_types::Text;
-use diesel::{Queryable, Selectable};
-use postgres::Client;
-use postgres::NoTls;
-use postgres::fallible_iterator::FallibleIterator;
-
-use diesel::pg::data_types::PgDate;
-use diesel::prelude::*;
-use dotenvy::dotenv;
+use crate::cacher::*;
+use diesel::connection::Connection;
+use diesel::query_builder::SelectStatement;
+use diesel::query_dsl::load_dsl::ExecuteDsl;
+use diesel::query_dsl::{LoadQuery, RunQueryDsl};
+use diesel::result::QueryResult;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::env;
-use std::hash::Hash;
-use std::iter::{Inspect, Map};
-use std::marker::PhantomData;
 use std::rc::Rc;
-
-use diesel::backend::Backend;
-use diesel::connection::{Connection, DefaultLoadingMode, LoadConnection};
-use diesel::expression::SelectableExpression;
-use diesel::helper_types::Limit;
-use diesel::query_builder::{AsQuery, SelectStatement};
-use diesel::query_dsl::load_dsl::ExecuteDsl;
-use diesel::query_dsl::{LoadQuery, RunQueryDsl, methods};
-use diesel::result::Error;
-use diesel::result::QueryResult;
-use julian::{Calendar, Month, system2jdn};
-
-use crate::cacher::*;
-
-use serde::{Deserialize, Serialize};
 
 pub struct ResultCachingIterator<I, U, C>
 where
@@ -312,4 +285,3 @@ impl<From, Select, Distinct, Where, Order, LimitOffset, GroupBy, Having, Locking
     for SelectStatement<From, Select, Distinct, Where, Order, LimitOffset, GroupBy, Having, Locking>
 {
 }
-
