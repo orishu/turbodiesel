@@ -1,10 +1,12 @@
+use crate::cacher::Cacher;
+use itertools::process_results;
 use redis;
 use redis::Commands;
 use redis::RedisError;
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use serde_json;
-use crate::cacher::Cacher;
+use std::collections::HashMap;
 
 pub struct RedisCache {
     client: redis::Client,
@@ -30,6 +32,17 @@ impl RedisCache {
         con.set::<&str, String, ()>(key, value_str)?;
         Ok(())
     }
+
+    pub fn scan_keys(&self, pattern: &str) -> Result<HashMap<String, String>, RedisError> {
+        let mut con = self.client.get_connection()?;
+        let keys: Vec<String> = con.keys(pattern)?;
+
+        process_results(
+            keys.into_iter()
+                .map(|k| Ok((k.clone(), con.get::<_, Option<String>>(k)?.unwrap()))),
+            |iter| iter.collect(),
+        )
+    }
 }
 
 impl Cacher for RedisCache {
@@ -37,17 +50,29 @@ impl Cacher for RedisCache {
     type Value = String;
 
     fn get(&self, key: &String) -> Option<String> {
-        let mut con = self.client.get_connection().expect("Failed to connect to Redis");
-        con.get::<_, Option<String>>(key).expect("Failed to get value from Redis")
+        let mut con = self
+            .client
+            .get_connection()
+            .expect("Failed to connect to Redis");
+        con.get::<_, Option<String>>(key)
+            .expect("Failed to get value from Redis")
     }
 
     fn put(&mut self, key: String, value: String) {
-        let mut con = self.client.get_connection().expect("Failed to connect to Redis");
-        con.set::<&str, String, ()>(&key, value).expect("Failed to set value in Redis");
+        let mut con = self
+            .client
+            .get_connection()
+            .expect("Failed to connect to Redis");
+        con.set::<&str, String, ()>(&key, value)
+            .expect("Failed to set value in Redis");
     }
 
     fn delete(&mut self, key: String) {
-        let mut con = self.client.get_connection().expect("Failed to connect to Redis");
-        con.del::<&str, ()>(&key).expect("Failed to delete key from Redis");
+        let mut con = self
+            .client
+            .get_connection()
+            .expect("Failed to connect to Redis");
+        con.del::<&str, ()>(&key)
+            .expect("Failed to delete key from Redis");
     }
 }

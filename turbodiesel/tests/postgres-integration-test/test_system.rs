@@ -14,28 +14,6 @@ use std::rc::Rc;
 use turbodiesel::statement_wrappers::*;
 
 #[test]
-#[cfg(feature = "inmemory")]
-fn raw_query() {
-    use postgres::Client;
-    use postgres::NoTls;
-    use postgres::fallible_iterator::FallibleIterator;
-
-    let mut client = Client::connect("host=localhost user=ori dbname=qflow", NoTls).unwrap();
-
-    let results = client
-        .query_raw("SELECT * FROM students", Vec::<&str>::new())
-        .unwrap()
-        .iterator()
-        .map(Result::unwrap);
-
-    results.for_each(|row| {
-        println!("{:?}", row);
-    });
-
-    assert_eq!(2 + 2, 4);
-}
-
-#[test]
 fn simple_insert_using_diesel() {
     let connection = &mut establish_connection();
     let records = vec![
@@ -55,6 +33,9 @@ fn simple_insert_using_diesel() {
             dob: Some(date_from_string("2009-04-18")),
         },
     ];
+    diesel::delete(students::table)
+        .execute(connection)
+        .expect("Error deleting existing students");
     diesel::insert_into(students::table)
         .values(records)
         .returning(Student::as_returning())
@@ -175,12 +156,20 @@ fn system_test_with_redis() {
             println!("Student: {:?}", student.unwrap());
         });
 
+    println!(
+        "Cache before update: {:?}",
+        cache.borrow().scan_keys("student:*").unwrap()
+    );
     diesel::update(students::table)
         .set(students::dsl::name.eq("Ori2"))
         .filter(students::dsl::id.eq(2))
         .invalidate_key(cache.clone(), "student:2")
         .execute(connection)
         .expect("Error updating students");
+    println!(
+        "Cache after update: {:?}",
+        cache.borrow().scan_keys("student:*").unwrap()
+    );
 
     students::dsl::students
         .select(Student::as_select())
