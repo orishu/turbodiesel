@@ -9,16 +9,17 @@ use diesel::prelude::*;
 use diesel::sql_types::Text;
 use julian::{Calendar, Month, system2jdn};
 use lazy_static::lazy_static;
-use postgres::Client;
-use postgres::NoTls;
-use postgres::fallible_iterator::FallibleIterator;
 use std::cell::RefCell;
 use std::rc::Rc;
-use turbodiesel::cacher::*;
 use turbodiesel::statement_wrappers::*;
 
 #[test]
+#[cfg(feature = "inmemory")]
 fn raw_query() {
+    use postgres::Client;
+    use postgres::NoTls;
+    use postgres::fallible_iterator::FallibleIterator;
+
     let mut client = Client::connect("host=localhost user=ori dbname=qflow", NoTls).unwrap();
 
     let results = client
@@ -72,7 +73,9 @@ fn simple_update_using_diesel() {
 }
 
 #[test]
-fn simple_select_using_diesel() {
+#[cfg(feature = "inmemory")]
+fn system_test_with_inmemory_cache() {
+    use turbodiesel::cacher::StringCache;
     let cache = Rc::new(RefCell::new(StringCache::new()));
     //        let student_row = (students::dsl::id, students::dsl::name, students::dsl::dob);
     let row_with_cache_key = (Student::as_select(), sql::<Text>("'student:' || id"));
@@ -119,6 +122,65 @@ fn simple_select_using_diesel() {
         .expect("Error updating students");
 
     println!("Cache after update: {:?}", cache);
+
+    students::dsl::students
+        .select(Student::as_select())
+        .filter(students::dsl::id.eq(2))
+        .use_cache_key(cache.clone(), "student:2")
+        .load_iter::<Student, DefaultLoadingMode>(connection)
+        .expect("Error loading student")
+        .for_each(|student| {
+            println!("Student: {:?}", student.unwrap());
+        });
+}
+
+#[test]
+#[cfg(feature = "redis")]
+fn system_test_with_redis() {
+    use turbodiesel::redis_cacher::RedisCache;
+
+    let cache = Rc::new(RefCell::new(
+        RedisCache::new("redis://localhost:6379").expect("Failed to create RedisCache"),
+    ));
+    let row_with_cache_key = (Student::as_select(), sql::<Text>("'student:' || id"));
+
+    let connection = &mut establish_connection();
+
+    diesel::update(students::table)
+        .set(students::dsl::name.eq("Ori1"))
+        .filter(students::dsl::id.eq(2))
+        .execute(connection)
+        .expect("Error updating students");
+
+    students::dsl::students
+        .select(row_with_cache_key)
+        .filter(students::dsl::id.eq(2))
+        .cache_results(cache.clone())
+        .load_iter::<Student, DefaultLoadingMode>(connection)
+        .expect("Error loading student")
+        .for_each(|student| {
+            println!("Student: {:?}", student.unwrap());
+        });
+
+    students::dsl::students
+        .select(Student::as_select())
+        .filter(students::dsl::id.eq_any(vec![1, 2]))
+        .use_cache_keys(
+            cache.clone(),
+            vec!["student:1".to_string(), "student:2".to_string()].into_iter(),
+        )
+        .load_iter::<Student, DefaultLoadingMode>(connection)
+        .expect("Error loading student")
+        .for_each(|student| {
+            println!("Student: {:?}", student.unwrap());
+        });
+
+    diesel::update(students::table)
+        .set(students::dsl::name.eq("Ori2"))
+        .filter(students::dsl::id.eq(2))
+        .invalidate_key(cache.clone(), "student:2")
+        .execute(connection)
+        .expect("Error updating students");
 
     students::dsl::students
         .select(Student::as_select())

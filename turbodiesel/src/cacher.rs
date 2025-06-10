@@ -17,13 +17,12 @@ pub trait Cacher {
     type Key: Eq + Hash;
     type Value;
 
-    fn get(&self, key: &Self::Key) -> Option<&Self::Value>;
+    fn get(&self, key: &Self::Key) -> Option<Self::Value>;
     fn put(&mut self, key: Self::Key, value: Self::Value);
     fn delete(&mut self, key: Self::Key);
 }
 
 impl<K: Eq + Hash, V> Cache<K, V> {
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new() -> Cache<K, V> {
         Cache {
             map: HashMap::new(),
@@ -31,12 +30,15 @@ impl<K: Eq + Hash, V> Cache<K, V> {
     }
 }
 
-impl<K: Eq + Hash, V> Cacher for Cache<K, V> {
+impl<K: Eq + Hash, V> Cacher for Cache<K, V>
+where
+    V: Clone,
+{
     type Key = K;
     type Value = V;
 
-    fn get(&self, key: &K) -> Option<&V> {
-        self.map.get(key)
+    fn get(&self, key: &K) -> Option<V> {
+        self.map.get(key).cloned()
     }
     fn put(&mut self, key: K, value: V) {
         self.map.insert(key, value);
@@ -47,7 +49,6 @@ impl<K: Eq + Hash, V> Cacher for Cache<K, V> {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub trait CachingStrategy {
     type Item: Serialize + DeserializeOwned;
 
@@ -65,20 +66,21 @@ pub trait CachingStrategy {
     }
 }
 
-pub struct InMemoryCachingStrategy<U>
+pub struct InMemoryCachingStrategy<C, U>
 where
+    C: Cacher<Key = String, Value = String>,
     U: Serialize + DeserializeOwned,
 {
-    cache: Rc<RefCell<StringCache>>,
+    cache: Rc<RefCell<C>>,
     phantom_data: PhantomData<U>,
 }
 
-impl<U> InMemoryCachingStrategy<U>
+impl<C, U> InMemoryCachingStrategy<C, U>
 where
+    C: Cacher<Key = String, Value = String>,
     U: Serialize + DeserializeOwned,
 {
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn new(cache: Rc<RefCell<StringCache>>) -> Self {
+    pub fn new(cache: Rc<RefCell<C>>) -> Self {
         Self {
             cache,
             phantom_data: PhantomData,
@@ -86,8 +88,9 @@ where
     }
 }
 
-impl<U> CachingStrategy for InMemoryCachingStrategy<U>
+impl<C, U> CachingStrategy for InMemoryCachingStrategy<C, U>
 where
+    C: Cacher<Key = String, Value = String>,
     U: Serialize + DeserializeOwned,
 {
     type Item = U;

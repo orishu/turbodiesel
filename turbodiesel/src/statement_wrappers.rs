@@ -1,7 +1,7 @@
-use crate::cacher::*;
-use diesel::QuerySource;
+use crate::cacher::Cacher;
+use crate::cacher::CachingStrategy;
+use crate::cacher::InMemoryCachingStrategy;
 use diesel::connection::Connection;
-use diesel::query_builder::{SelectStatement, UpdateStatement};
 use diesel::query_dsl::load_dsl::ExecuteDsl;
 use diesel::query_dsl::{LoadQuery, RunQueryDsl};
 use diesel::result::QueryResult;
@@ -236,10 +236,12 @@ where
 }
 
 pub trait WrappableQuery {
+    type Cache: Cacher<Key = String, Value = String>;
+
     fn cache_results<U>(
         self,
-        cache: Rc<RefCell<StringCache>>,
-    ) -> SelectCachingWrapper<Self, InMemoryCachingStrategy<U>, U>
+        cache: Rc<RefCell<Self::Cache>>,
+    ) -> SelectCachingWrapper<Self, InMemoryCachingStrategy<Self::Cache, U>, U>
     where
         Self: Sized,
         U: Serialize + DeserializeOwned,
@@ -249,11 +251,11 @@ pub trait WrappableQuery {
 
     fn use_cache_key<'a, U>(
         self,
-        cache: Rc<RefCell<StringCache>>,
+        cache: Rc<RefCell<Self::Cache>>,
         key: &'a str,
     ) -> SelectCacheReadWrapper<
         Self,
-        InMemoryCachingStrategy<U>,
+        InMemoryCachingStrategy<Self::Cache, U>,
         U,
         <Vec<String> as IntoIterator>::IntoIter,
     >
@@ -270,9 +272,9 @@ pub trait WrappableQuery {
 
     fn use_cache_keys<U, K>(
         self,
-        cache: Rc<RefCell<StringCache>>,
+        cache: Rc<RefCell<Self::Cache>>,
         keys: K,
-    ) -> SelectCacheReadWrapper<Self, InMemoryCachingStrategy<U>, U, K>
+    ) -> SelectCacheReadWrapper<Self, InMemoryCachingStrategy<Self::Cache, U>, U, K>
     where
         Self: Sized,
         U: Serialize + DeserializeOwned,
@@ -282,25 +284,22 @@ pub trait WrappableQuery {
     }
 }
 
-impl<From, Select, Distinct, Where, Order, LimitOffset, GroupBy, Having, Locking> WrappableQuery
-    for SelectStatement<From, Select, Distinct, Where, Order, LimitOffset, GroupBy, Having, Locking>
-{
-}
-
-pub struct UpdateWrapper<T, K>
+pub struct UpdateWrapper<T, K, C>
 where
     K: Iterator<Item = String>,
+    C: Cacher<Key = String, Value = String>,
 {
     inner_update: T,
     keys: K,
-    cache: Rc<RefCell<StringCache>>,
+    cache: Rc<RefCell<C>>,
 }
 
-impl<T, K> UpdateWrapper<T, K>
+impl<T, K, C> UpdateWrapper<T, K, C>
 where
     K: Iterator<Item = String>,
+    C: Cacher<Key = String, Value = String>,
 {
-    fn new(inner_update: T, keys: K, cache: Rc<RefCell<StringCache>>) -> Self {
+    fn new(inner_update: T, keys: K, cache: Rc<RefCell<C>>) -> Self {
         Self {
             inner_update,
             keys,
@@ -309,11 +308,12 @@ where
     }
 }
 
-impl<T, Conn, K> ExecuteDsl<Conn, Conn::Backend> for UpdateWrapper<T, K>
+impl<T, Conn, K, C> ExecuteDsl<Conn, Conn::Backend> for UpdateWrapper<T, K, C>
 where
     T: ExecuteDsl<Conn>,
     Conn: Connection,
     K: Iterator<Item = String>,
+    C: Cacher<Key = String, Value = String>,
 {
     fn execute(query: Self, conn: &mut Conn) -> QueryResult<usize> {
         let mut cache = query.cache.borrow_mut();
@@ -325,21 +325,32 @@ where
     }
 }
 
-impl<T, Conn, K> RunQueryDsl<Conn> for UpdateWrapper<T, K> where K: Iterator<Item = String> {}
+impl<T, Conn, K, C> RunQueryDsl<Conn> for UpdateWrapper<T, K, C>
+where
+    K: Iterator<Item = String>,
+    C: Cacher<Key = String, Value = String>,
+{
+}
 
 pub trait WrappableUpdate {
+    type Cache: Cacher<Key = String, Value = String>;
+
     fn invalidate_key<'a>(
         self,
-        cache: Rc<RefCell<StringCache>>,
+        cache: Rc<RefCell<Self::Cache>>,
         key: &'a str,
-    ) -> UpdateWrapper<Self, <Vec<String> as IntoIterator>::IntoIter>
+    ) -> UpdateWrapper<Self, <Vec<String> as IntoIterator>::IntoIter, Self::Cache>
     where
         Self: Sized,
     {
         UpdateWrapper::new(self, vec![key.to_string()].into_iter(), cache)
     }
 
-    fn invalidate_keys<K>(self, cache: Rc<RefCell<StringCache>>, keys: K) -> UpdateWrapper<Self, K>
+    fn invalidate_keys<K>(
+        self,
+        cache: Rc<RefCell<Self::Cache>>,
+        keys: K,
+    ) -> UpdateWrapper<Self, K, Self::Cache>
     where
         Self: Sized,
         K: Iterator<Item = String>,
@@ -347,5 +358,3 @@ pub trait WrappableUpdate {
         UpdateWrapper::new(self, keys, cache)
     }
 }
-
-impl<T, U, V, Ret> WrappableUpdate for UpdateStatement<T, U, V, Ret> where T: QuerySource {}
