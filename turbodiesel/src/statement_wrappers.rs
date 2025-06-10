@@ -1,6 +1,7 @@
 use crate::cacher::*;
+use diesel::QuerySource;
 use diesel::connection::Connection;
-use diesel::query_builder::SelectStatement;
+use diesel::query_builder::{SelectStatement, UpdateStatement};
 use diesel::query_dsl::load_dsl::ExecuteDsl;
 use diesel::query_dsl::{LoadQuery, RunQueryDsl};
 use diesel::result::QueryResult;
@@ -101,7 +102,7 @@ where
 
 pub struct SelectCachingWrapper<T, C, U>
 where
-    U: Serialize,
+    U: Serialize + DeserializeOwned,
     C: CachingStrategy<Item = U>,
 {
     inner_select: T,
@@ -110,7 +111,7 @@ where
 
 impl<T, C, U> SelectCachingWrapper<T, C, U>
 where
-    U: Serialize,
+    U: Serialize + DeserializeOwned,
     C: CachingStrategy<Item = U>,
 {
     fn new(inner_select: T, caching: C) -> Self {
@@ -125,7 +126,7 @@ impl<T, Conn, C, U> ExecuteDsl<Conn, Conn::Backend> for SelectCachingWrapper<T, 
 where
     T: ExecuteDsl<Conn>,
     Conn: Connection,
-    U: Serialize,
+    U: Serialize + DeserializeOwned,
     C: CachingStrategy<Item = U>,
 {
     fn execute(query: Self, conn: &mut Conn) -> QueryResult<usize> {
@@ -136,7 +137,7 @@ where
 impl<T, Conn, C, U> RunQueryDsl<Conn> for SelectCachingWrapper<T, C, U>
 where
     C: CachingStrategy<Item = U>,
-    U: Serialize,
+    U: Serialize + DeserializeOwned,
 {
 }
 
@@ -144,7 +145,7 @@ impl<'query, T, Conn, U, B, C> LoadQuery<'query, Conn, U, B> for SelectCachingWr
 where
     T: LoadQuery<'query, Conn, (U, String), B>,
     Conn: 'query,
-    U: Serialize + std::fmt::Debug,
+    U: Serialize + DeserializeOwned + std::fmt::Debug,
     C: CachingStrategy<Item = U>,
 {
     type RowIter<'a>
@@ -166,7 +167,7 @@ where
 
 pub struct SelectCacheReadWrapper<T, C, U, K>
 where
-    U: Serialize,
+    U: Serialize + DeserializeOwned,
     C: CachingStrategy<Item = U>,
     K: Iterator<Item = String>,
 {
@@ -177,7 +178,7 @@ where
 
 impl<T, C, U, K> SelectCacheReadWrapper<T, C, U, K>
 where
-    U: Serialize,
+    U: Serialize + DeserializeOwned,
     C: CachingStrategy<Item = U>,
     K: Iterator<Item = String>,
 {
@@ -194,7 +195,7 @@ impl<T, Conn, C, U, K> ExecuteDsl<Conn, Conn::Backend> for SelectCacheReadWrappe
 where
     T: ExecuteDsl<Conn>,
     Conn: Connection,
-    U: Serialize,
+    U: Serialize + DeserializeOwned,
     C: CachingStrategy<Item = U>,
     K: Iterator<Item = String>,
 {
@@ -206,7 +207,7 @@ where
 impl<T, Conn, C, U, K> RunQueryDsl<Conn> for SelectCacheReadWrapper<T, C, U, K>
 where
     C: CachingStrategy<Item = U>,
-    U: Serialize,
+    U: Serialize + DeserializeOwned,
     K: Iterator<Item = String>,
 {
 }
@@ -285,3 +286,66 @@ impl<From, Select, Distinct, Where, Order, LimitOffset, GroupBy, Having, Locking
     for SelectStatement<From, Select, Distinct, Where, Order, LimitOffset, GroupBy, Having, Locking>
 {
 }
+
+pub struct UpdateWrapper<T, K>
+where
+    K: Iterator<Item = String>,
+{
+    inner_update: T,
+    keys: K,
+    cache: Rc<RefCell<StringCache>>,
+}
+
+impl<T, K> UpdateWrapper<T, K>
+where
+    K: Iterator<Item = String>,
+{
+    fn new(inner_update: T, keys: K, cache: Rc<RefCell<StringCache>>) -> Self {
+        Self {
+            inner_update,
+            keys,
+            cache,
+        }
+    }
+}
+
+impl<T, Conn, K> ExecuteDsl<Conn, Conn::Backend> for UpdateWrapper<T, K>
+where
+    T: ExecuteDsl<Conn>,
+    Conn: Connection,
+    K: Iterator<Item = String>,
+{
+    fn execute(query: Self, conn: &mut Conn) -> QueryResult<usize> {
+        let mut cache = query.cache.borrow_mut();
+        query.keys.for_each(|key| {
+            println!("Invalidating cache for key: {}", key);
+            cache.delete(key);
+        });
+        ExecuteDsl::<Conn, Conn::Backend>::execute(query.inner_update, conn)
+    }
+}
+
+impl<T, Conn, K> RunQueryDsl<Conn> for UpdateWrapper<T, K> where K: Iterator<Item = String> {}
+
+pub trait WrappableUpdate {
+    fn invalidate_key<'a>(
+        self,
+        cache: Rc<RefCell<StringCache>>,
+        key: &'a str,
+    ) -> UpdateWrapper<Self, <Vec<String> as IntoIterator>::IntoIter>
+    where
+        Self: Sized,
+    {
+        UpdateWrapper::new(self, vec![key.to_string()].into_iter(), cache)
+    }
+
+    fn invalidate_keys<K>(self, cache: Rc<RefCell<StringCache>>, keys: K) -> UpdateWrapper<Self, K>
+    where
+        Self: Sized,
+        K: Iterator<Item = String>,
+    {
+        UpdateWrapper::new(self, keys, cache)
+    }
+}
+
+impl<T, U, V, Ret> WrappableUpdate for UpdateStatement<T, U, V, Ret> where T: QuerySource {}

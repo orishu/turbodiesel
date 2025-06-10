@@ -19,6 +19,7 @@ pub trait Cacher {
 
     fn get(&self, key: &Self::Key) -> Option<&Self::Value>;
     fn put(&mut self, key: Self::Key, value: Self::Value);
+    fn delete(&mut self, key: Self::Key);
 }
 
 impl<K: Eq + Hash, V> Cache<K, V> {
@@ -39,6 +40,10 @@ impl<K: Eq + Hash, V> Cacher for Cache<K, V> {
     }
     fn put(&mut self, key: K, value: V) {
         self.map.insert(key, value);
+    }
+
+    fn delete(&mut self, key: K) {
+        self.map.remove(&key);
     }
 }
 
