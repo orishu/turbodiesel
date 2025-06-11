@@ -76,3 +76,33 @@ impl Cacher for RedisCache {
             .expect("Failed to delete key from Redis");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_redis_get_and_set() {
+        let redis_url = "redis://localhost:6379";
+        let mut cacher = RedisCache::new(redis_url).expect("Failed to create RedisCache");
+        let key = "test_key";
+        let value = "test_value";
+
+        // Test set
+        cacher
+            .set(key, &value)
+            .expect("Failed to set value in Redis");
+
+        // Test get
+        let retrieved_value: Option<String> =
+            cacher.get(key).expect("Failed to get value from Redis");
+        assert_eq!(
+            retrieved_value,
+            Some(value.to_string()),
+            "Retrieved value does not match set value"
+        );
+
+        // Clean up
+        cacher.delete(key.to_string());
+    }
+}
