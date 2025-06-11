@@ -30,3 +30,7 @@ doctest = false
 bench = false
 doc = false
 harness = true
+
+[dev-dependencies]
+async-std = "1.13.1"
+dockertest = "0.5.0"

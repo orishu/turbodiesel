@@ -79,30 +79,49 @@ impl Cacher for RedisCache {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use async_std::task;
+
+    use dockertest::{DockerTest, TestBodySpecification};
+    use dotenvy::dotenv;
+
     use super::*;
 
     #[test]
     fn test_redis_get_and_set() {
-        let redis_url = "redis://localhost:6379";
-        let mut cacher = RedisCache::new(redis_url).expect("Failed to create RedisCache");
-        let key = "test_key";
-        let value = "test_value";
+        dotenv().ok();
+        let image =
+            dockertest::Image::with_repository("redis").source(dockertest::Source::DockerHub);
+        let mut redis_container = TestBodySpecification::with_image(image);
+        redis_container.modify_port_map(6379, 6380);
+        let mut test = DockerTest::new();
+        test.provide_container(redis_container);
+        println!("Running Redis integration test...");
+        test.run(|_| async move {
+            task::sleep(Duration::from_millis(3000)).await;
+            let redis_url = "redis://localhost:6380";
+            let mut cacher = RedisCache::new(redis_url).expect("Failed to create RedisCache");
+            let key = "test_key";
+            let value = "test_value";
 
-        // Test set
-        cacher
-            .set(key, &value)
-            .expect("Failed to set value in Redis");
+            // Test set
+            cacher
+                .set(key, &value)
+                .expect("Failed to set value in Redis");
 
-        // Test get
-        let retrieved_value: Option<String> =
-            cacher.get(key).expect("Failed to get value from Redis");
-        assert_eq!(
-            retrieved_value,
-            Some(value.to_string()),
-            "Retrieved value does not match set value"
-        );
+            // Test get
+            let retrieved_value: Option<String> =
+                cacher.get(key).expect("Failed to get value from Redis");
+            assert_eq!(
+                retrieved_value,
+                Some(value.to_string()),
+                "Retrieved value does not match set value"
+            );
 
-        // Clean up
-        cacher.delete(key.to_string());
+            // Clean up
+            cacher.delete(key.to_string());
+        });
+        println!("Redis integration test completed successfully.");
     }
 }
