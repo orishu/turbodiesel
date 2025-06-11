@@ -3,10 +3,9 @@ use itertools::process_results;
 use redis;
 use redis::Commands;
 use redis::RedisError;
-use serde::de::DeserializeOwned;
-use serde::ser::Serialize;
-use serde_json;
 use std::collections::HashMap;
+use std::time::Duration;
+use async_std::task;
 
 pub struct RedisCache {
     client: redis::Client,
@@ -18,21 +17,6 @@ impl RedisCache {
         Ok(RedisCache { client })
     }
 
-    pub fn get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>, RedisError> {
-        let mut con = self.client.get_connection()?;
-        match con.get::<_, Option<String>>(key)? {
-            Some(value) => Ok(Some(serde_json::from_str(&value)?)),
-            None => Ok(None),
-        }
-    }
-
-    pub fn set<T: Serialize>(&self, key: &str, value: &T) -> Result<(), redis::RedisError> {
-        let mut con = self.client.get_connection()?;
-        let value_str = serde_json::to_string(value)?;
-        con.set::<&str, String, ()>(key, value_str)?;
-        Ok(())
-    }
-
     pub fn scan_keys(&self, pattern: &str) -> Result<HashMap<String, String>, RedisError> {
         let mut con = self.client.get_connection()?;
         let keys: Vec<String> = con.keys(pattern)?;
@@ -42,6 +26,22 @@ impl RedisCache {
                 .map(|k| Ok((k.clone(), con.get::<_, Option<String>>(k)?.unwrap()))),
             |iter| iter.collect(),
         )
+    }
+
+    pub fn check_online(&self) -> Result<(), RedisError> {
+        let mut con = self.client.get_connection()?;
+        con.ping::<String>()?;
+        Ok(())
+    }
+
+    pub async fn wait_until_online(&self, retries: usize) -> Result<(), RedisError> {
+        for _ in 0..retries {
+            if self.check_online().is_ok() {
+                return Ok(());
+            }
+            task::sleep(Duration::from_secs(1)).await;
+        }
+        Err(RedisError::from((redis::ErrorKind::IoError, "Redis is not online")))
     }
 }
 
@@ -79,10 +79,6 @@ impl Cacher for RedisCache {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use async_std::task;
-
     use dockertest::{DockerTest, TestBodySpecification};
     use dotenvy::dotenv;
 
@@ -99,20 +95,18 @@ mod tests {
         test.provide_container(redis_container);
         println!("Running Redis integration test...");
         test.run(|_| async move {
-            task::sleep(Duration::from_millis(3000)).await;
             let redis_url = "redis://localhost:6380";
             let mut cacher = RedisCache::new(redis_url).expect("Failed to create RedisCache");
+            cacher.wait_until_online(6).await.expect("Redis is not online after retries");
+
             let key = "test_key";
             let value = "test_value";
 
-            // Test set
-            cacher
-                .set(key, &value)
-                .expect("Failed to set value in Redis");
+            // Test put
+            cacher.put(key.to_string(), value.to_string());
 
             // Test get
-            let retrieved_value: Option<String> =
-                cacher.get(key).expect("Failed to get value from Redis");
+            let retrieved_value: Option<String> = cacher.get(&key.to_string());
             assert_eq!(
                 retrieved_value,
                 Some(value.to_string()),

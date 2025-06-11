@@ -9,6 +9,7 @@ inmemory = []
 redis = []
 
 [dependencies]
+async-std = "1.13.1"
 chrono = "0.4.40"
 dateparser = "0.2.1"
 diesel = { version = "2.2.8", features = ["postgres"] }
@@ -32,5 +33,4 @@ doc = false
 harness = true
 
 [dev-dependencies]
-async-std = "1.13.1"
 dockertest = "0.5.0"
