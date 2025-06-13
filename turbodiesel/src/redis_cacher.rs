@@ -8,6 +8,7 @@ use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::collections::HashMap;
 use std::time::Duration;
+use std::time::SystemTime;
 
 pub struct RedisCache {
     client: redis::Client,
@@ -72,7 +73,13 @@ impl CacheHandle for RedisCacheHandle {
             .expect("Failed to connect to Redis");
         con.get::<_, Option<String>>(key)
             .expect("Failed to get value from Redis")
-            .and_then(|v| serde_json::from_str(&v).ok())
+            .and_then(|v| {
+                let value = serde_json::from_str(v.as_str()).ok();
+                value.map(|v: serde_json::Value| {
+                    let untyped_val = v.get("value".to_string()).unwrap().clone();
+                    serde_json::from_value(untyped_val).unwrap()
+                })
+            })
     }
 
     fn put<V: Serialize + DeserializeOwned>(&mut self, key: &String, value: &V) {
@@ -80,7 +87,15 @@ impl CacheHandle for RedisCacheHandle {
             .client
             .get_connection()
             .expect("Failed to connect to Redis");
-        con.set::<&str, String, ()>(&key, serde_json::to_string(value).unwrap())
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let json_value = serde_json::json!({
+            "value": value,
+            "timestamp": now,
+        });
+        con.set::<&str, String, ()>(&key, serde_json::to_string(&json_value).unwrap())
             .expect("Failed to set value in Redis");
     }
 
