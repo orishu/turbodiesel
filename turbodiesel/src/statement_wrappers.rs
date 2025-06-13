@@ -143,7 +143,7 @@ where
         let load_iter = self.inner_select.internal_load(conn)?;
         let caching_iter = ResultCachingIterator {
             inner: load_iter,
-            cache: self.cache.clone(),
+            cache: self.cache,
         };
         Ok(caching_iter)
     }
@@ -209,7 +209,7 @@ where
         println!("In internal_load (1)");
 
         let load_iter = self.inner_select.internal_load(conn)?;
-        let lookup_iter = ResultCacheLookupIterator::new(load_iter, self.cache.clone(), self.keys);
+        let lookup_iter = ResultCacheLookupIterator::new(load_iter, self.cache, self.keys);
         Ok(lookup_iter)
     }
 }
@@ -222,7 +222,7 @@ pub trait WrappableQuery {
         Self: Sized,
         U: Serialize + DeserializeOwned,
     {
-        SelectCachingWrapper::new(self, cache.clone())
+        SelectCachingWrapper::new(self, cache)
     }
 
     fn use_cache_key<'a, U>(
@@ -234,7 +234,7 @@ pub trait WrappableQuery {
         Self: Sized,
         U: Serialize + DeserializeOwned,
     {
-        SelectCacheReadWrapper::new(self, vec![key.to_string()].into_iter(), cache.clone())
+        SelectCacheReadWrapper::new(self, vec![key.to_string()].into_iter(), cache)
     }
 
     fn use_cache_keys<U, K>(
@@ -247,7 +247,7 @@ pub trait WrappableQuery {
         U: Serialize + DeserializeOwned,
         K: Iterator<Item = String>,
     {
-        SelectCacheReadWrapper::new(self, keys, cache.clone())
+        SelectCacheReadWrapper::new(self, keys, cache)
     }
 }
 
@@ -309,7 +309,7 @@ pub trait WrappableUpdate {
     where
         Self: Sized,
     {
-        UpdateWrapper::new(self, vec![key.to_string()].into_iter(), cache.clone())
+        UpdateWrapper::new(self, vec![key.to_string()].into_iter(), cache)
     }
 
     fn invalidate_keys<K>(self, cache: Self::Cache, keys: K) -> UpdateWrapper<Self, K, Self::Cache>
@@ -317,6 +317,6 @@ pub trait WrappableUpdate {
         Self: Sized,
         K: Iterator<Item = String>,
     {
-        UpdateWrapper::new(self, keys, cache.clone())
+        UpdateWrapper::new(self, keys, cache)
     }
 }
