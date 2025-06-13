@@ -1,30 +1,26 @@
-use crate::cacher::Cacher;
-use crate::cacher::CachingStrategy;
-use crate::cacher::InMemoryCachingStrategy;
+use crate::cacher::CacheHandle;
 use diesel::connection::Connection;
 use diesel::query_dsl::load_dsl::ExecuteDsl;
 use diesel::query_dsl::{LoadQuery, RunQueryDsl};
 use diesel::result::QueryResult;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 pub struct ResultCachingIterator<I, U, C>
 where
     I: Iterator<Item = QueryResult<(U, String)>>,
-    C: CachingStrategy<Item = U>,
+    C: CacheHandle,
     U: Serialize,
 {
     inner: I,
-    caching_strategy: C,
+    cache: C,
 }
 
 impl<I, U, C> Iterator for ResultCachingIterator<I, U, C>
 where
     I: Iterator<Item = QueryResult<(U, String)>>,
-    C: CachingStrategy<Item = U>,
-    U: Serialize + std::fmt::Debug,
+    C: CacheHandle,
+    U: Serialize + DeserializeOwned + std::fmt::Debug,
 {
     type Item = QueryResult<U>;
 
@@ -33,7 +29,7 @@ where
         if let Some(ref it_res) = item {
             println!("Item result is {:?}", it_res);
             if let Ok(it) = it_res {
-                self.caching_strategy.put_item(&it.1, &it.0);
+                self.cache.put::<U>(&it.1, &it.0);
                 println!("Item cached (2)");
             }
         }
@@ -44,35 +40,31 @@ where
 pub struct ResultCacheLookupIterator<I, U, C, K>
 where
     I: Iterator<Item = QueryResult<U>>,
-    C: CachingStrategy<Item = U>,
+    C: CacheHandle,
     U: Serialize + DeserializeOwned,
     K: Iterator<Item = String>,
 {
     inner: I,
     keys: K,
-    caching_strategy: C,
+    cache: C,
 }
 
 impl<I, U, C, K> ResultCacheLookupIterator<I, U, C, K>
 where
     I: Iterator<Item = QueryResult<U>>,
-    C: CachingStrategy<Item = U>,
+    C: CacheHandle,
     U: Serialize + DeserializeOwned,
     K: Iterator<Item = String>,
 {
-    fn new(inner: I, caching_strategy: C, keys: K) -> Self {
-        Self {
-            inner,
-            keys,
-            caching_strategy,
-        }
+    fn new(inner: I, cache: C, keys: K) -> Self {
+        Self { inner, keys, cache }
     }
 }
 
 impl<I, U, C, K> Iterator for ResultCacheLookupIterator<I, U, C, K>
 where
     I: Iterator<Item = QueryResult<U>>,
-    C: CachingStrategy<Item = U>,
+    C: CacheHandle,
     U: Serialize + DeserializeOwned + std::fmt::Debug,
     K: Iterator<Item = String>,
 {
@@ -80,7 +72,7 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         let key = self.keys.next()?;
-        match self.caching_strategy.get_item(&key) {
+        match self.cache.get::<U>(&key) {
             Some(cached_val) => {
                 println!("Cache hit for key: {}", key);
                 Some(Ok(cached_val))
@@ -89,7 +81,7 @@ where
                 println!("Cache miss for key: {}, reading from inner", key);
                 match self.inner.next() {
                     Some(Ok(val)) => {
-                        self.caching_strategy.put_item(&key, &val);
+                        self.cache.put::<U>(&key, &val);
                         Some(Ok(val))
                     }
                     Some(Err(e)) => Some(Err(e)),
@@ -100,53 +92,45 @@ where
     }
 }
 
-pub struct SelectCachingWrapper<T, C, U>
+pub struct SelectCachingWrapper<T, C>
 where
-    U: Serialize + DeserializeOwned,
-    C: CachingStrategy<Item = U>,
+    C: CacheHandle,
 {
     inner_select: T,
-    caching: C,
+    cache: C,
 }
 
-impl<T, C, U> SelectCachingWrapper<T, C, U>
+impl<T, C> SelectCachingWrapper<T, C>
 where
-    U: Serialize + DeserializeOwned,
-    C: CachingStrategy<Item = U>,
+    C: CacheHandle,
 {
-    fn new(inner_select: T, caching: C) -> Self {
+    fn new(inner_select: T, cache: C) -> Self {
         Self {
             inner_select,
-            caching,
+            cache,
         }
     }
 }
 
-impl<T, Conn, C, U> ExecuteDsl<Conn, Conn::Backend> for SelectCachingWrapper<T, C, U>
+impl<T, Conn, C> ExecuteDsl<Conn, Conn::Backend> for SelectCachingWrapper<T, C>
 where
     T: ExecuteDsl<Conn>,
     Conn: Connection,
-    U: Serialize + DeserializeOwned,
-    C: CachingStrategy<Item = U>,
+    C: CacheHandle,
 {
     fn execute(query: Self, conn: &mut Conn) -> QueryResult<usize> {
         ExecuteDsl::<Conn, Conn::Backend>::execute(query.inner_select, conn)
     }
 }
 
-impl<T, Conn, C, U> RunQueryDsl<Conn> for SelectCachingWrapper<T, C, U>
-where
-    C: CachingStrategy<Item = U>,
-    U: Serialize + DeserializeOwned,
-{
-}
+impl<T, Conn, C> RunQueryDsl<Conn> for SelectCachingWrapper<T, C> where C: CacheHandle {}
 
-impl<'query, T, Conn, U, B, C> LoadQuery<'query, Conn, U, B> for SelectCachingWrapper<T, C, U>
+impl<'query, T, Conn, U, B, C> LoadQuery<'query, Conn, U, B> for SelectCachingWrapper<T, C>
 where
     T: LoadQuery<'query, Conn, (U, String), B>,
     Conn: 'query,
     U: Serialize + DeserializeOwned + std::fmt::Debug,
-    C: CachingStrategy<Item = U>,
+    C: CacheHandle,
 {
     type RowIter<'a>
         = ResultCachingIterator<T::RowIter<'a>, U, C>
@@ -159,44 +143,41 @@ where
         let load_iter = self.inner_select.internal_load(conn)?;
         let caching_iter = ResultCachingIterator {
             inner: load_iter,
-            caching_strategy: self.caching,
+            cache: self.cache.clone(),
         };
         Ok(caching_iter)
     }
 }
 
-pub struct SelectCacheReadWrapper<T, C, U, K>
+pub struct SelectCacheReadWrapper<T, C, K>
 where
-    U: Serialize + DeserializeOwned,
-    C: CachingStrategy<Item = U>,
+    C: CacheHandle,
     K: Iterator<Item = String>,
 {
     inner_select: T,
     keys: K,
-    caching: C,
+    cache: C,
 }
 
-impl<T, C, U, K> SelectCacheReadWrapper<T, C, U, K>
+impl<T, C, K> SelectCacheReadWrapper<T, C, K>
 where
-    U: Serialize + DeserializeOwned,
-    C: CachingStrategy<Item = U>,
+    C: CacheHandle,
     K: Iterator<Item = String>,
 {
-    fn new(inner_select: T, keys: K, caching: C) -> Self {
+    fn new(inner_select: T, keys: K, cache: C) -> Self {
         Self {
             inner_select,
             keys,
-            caching,
+            cache,
         }
     }
 }
 
-impl<T, Conn, C, U, K> ExecuteDsl<Conn, Conn::Backend> for SelectCacheReadWrapper<T, C, U, K>
+impl<T, Conn, C, K> ExecuteDsl<Conn, Conn::Backend> for SelectCacheReadWrapper<T, C, K>
 where
     T: ExecuteDsl<Conn>,
     Conn: Connection,
-    U: Serialize + DeserializeOwned,
-    C: CachingStrategy<Item = U>,
+    C: CacheHandle,
     K: Iterator<Item = String>,
 {
     fn execute(query: Self, conn: &mut Conn) -> QueryResult<usize> {
@@ -204,21 +185,19 @@ where
     }
 }
 
-impl<T, Conn, C, U, K> RunQueryDsl<Conn> for SelectCacheReadWrapper<T, C, U, K>
+impl<T, Conn, C, K> RunQueryDsl<Conn> for SelectCacheReadWrapper<T, C, K>
 where
-    C: CachingStrategy<Item = U>,
-    U: Serialize + DeserializeOwned,
+    C: CacheHandle,
     K: Iterator<Item = String>,
 {
 }
 
-impl<'query, T, Conn, U, B, C, K> LoadQuery<'query, Conn, U, B>
-    for SelectCacheReadWrapper<T, C, U, K>
+impl<'query, T, Conn, U, B, C, K> LoadQuery<'query, Conn, U, B> for SelectCacheReadWrapper<T, C, K>
 where
     T: LoadQuery<'query, Conn, U, B>,
     Conn: 'query,
     U: Serialize + DeserializeOwned + std::fmt::Debug,
-    C: CachingStrategy<Item = U>,
+    C: CacheHandle,
     K: Iterator<Item = String>,
 {
     type RowIter<'a>
@@ -230,76 +209,64 @@ where
         println!("In internal_load (1)");
 
         let load_iter = self.inner_select.internal_load(conn)?;
-        let lookup_iter = ResultCacheLookupIterator::new(load_iter, self.caching, self.keys);
+        let lookup_iter = ResultCacheLookupIterator::new(load_iter, self.cache.clone(), self.keys);
         Ok(lookup_iter)
     }
 }
 
 pub trait WrappableQuery {
-    type Cache: Cacher<Key = String, Value = String>;
+    type Cache: CacheHandle;
 
-    fn cache_results<U>(
-        self,
-        cache: Rc<RefCell<Self::Cache>>,
-    ) -> SelectCachingWrapper<Self, InMemoryCachingStrategy<Self::Cache, U>, U>
+    fn cache_results<U>(self, cache: Self::Cache) -> SelectCachingWrapper<Self, Self::Cache>
     where
         Self: Sized,
         U: Serialize + DeserializeOwned,
     {
-        SelectCachingWrapper::new(self, InMemoryCachingStrategy::new(cache))
+        SelectCachingWrapper::new(self, cache.clone())
     }
 
     fn use_cache_key<'a, U>(
         self,
-        cache: Rc<RefCell<Self::Cache>>,
+        cache: Self::Cache,
         key: &'a str,
-    ) -> SelectCacheReadWrapper<
-        Self,
-        InMemoryCachingStrategy<Self::Cache, U>,
-        U,
-        <Vec<String> as IntoIterator>::IntoIter,
-    >
+    ) -> SelectCacheReadWrapper<Self, Self::Cache, <Vec<String> as IntoIterator>::IntoIter>
     where
         Self: Sized,
         U: Serialize + DeserializeOwned,
     {
-        SelectCacheReadWrapper::new(
-            self,
-            vec![key.to_string()].into_iter(),
-            InMemoryCachingStrategy::new(cache),
-        )
+        SelectCacheReadWrapper::new(self, vec![key.to_string()].into_iter(), cache.clone())
     }
 
     fn use_cache_keys<U, K>(
         self,
-        cache: Rc<RefCell<Self::Cache>>,
+        cache: Self::Cache,
         keys: K,
-    ) -> SelectCacheReadWrapper<Self, InMemoryCachingStrategy<Self::Cache, U>, U, K>
+    ) -> SelectCacheReadWrapper<Self, Self::Cache, K>
     where
         Self: Sized,
         U: Serialize + DeserializeOwned,
         K: Iterator<Item = String>,
     {
-        SelectCacheReadWrapper::new(self, keys, InMemoryCachingStrategy::new(cache))
+        SelectCacheReadWrapper::new(self, keys, cache.clone())
     }
 }
 
 pub struct UpdateWrapper<T, K, C>
 where
     K: Iterator<Item = String>,
-    C: Cacher<Key = String, Value = String>,
+    C: CacheHandle,
 {
     inner_update: T,
     keys: K,
-    cache: Rc<RefCell<C>>,
+    cache: C,
 }
 
 impl<T, K, C> UpdateWrapper<T, K, C>
 where
     K: Iterator<Item = String>,
-    C: Cacher<Key = String, Value = String>,
+    C: CacheHandle,
 {
-    fn new(inner_update: T, keys: K, cache: Rc<RefCell<C>>) -> Self {
+    fn new(inner_update: T, keys: K, cache: C) -> Self {
         Self {
             inner_update,
             keys,
@@ -313,13 +280,12 @@ where
     T: ExecuteDsl<Conn>,
     Conn: Connection,
     K: Iterator<Item = String>,
-    C: Cacher<Key = String, Value = String>,
+    C: CacheHandle,
 {
     fn execute(query: Self, conn: &mut Conn) -> QueryResult<usize> {
-        let mut cache = query.cache.borrow_mut();
         query.keys.for_each(|key| {
             println!("Invalidating cache for key: {}", key);
-            cache.delete(key);
+            query.cache.clone().delete(&key);
         });
         ExecuteDsl::<Conn, Conn::Backend>::execute(query.inner_update, conn)
     }
@@ -328,33 +294,29 @@ where
 impl<T, Conn, K, C> RunQueryDsl<Conn> for UpdateWrapper<T, K, C>
 where
     K: Iterator<Item = String>,
-    C: Cacher<Key = String, Value = String>,
+    C: CacheHandle,
 {
 }
 
 pub trait WrappableUpdate {
-    type Cache: Cacher<Key = String, Value = String>;
+    type Cache: CacheHandle;
 
     fn invalidate_key<'a>(
         self,
-        cache: Rc<RefCell<Self::Cache>>,
+        cache: Self::Cache,
         key: &'a str,
     ) -> UpdateWrapper<Self, <Vec<String> as IntoIterator>::IntoIter, Self::Cache>
     where
         Self: Sized,
     {
-        UpdateWrapper::new(self, vec![key.to_string()].into_iter(), cache)
+        UpdateWrapper::new(self, vec![key.to_string()].into_iter(), cache.clone())
     }
 
-    fn invalidate_keys<K>(
-        self,
-        cache: Rc<RefCell<Self::Cache>>,
-        keys: K,
-    ) -> UpdateWrapper<Self, K, Self::Cache>
+    fn invalidate_keys<K>(self, cache: Self::Cache, keys: K) -> UpdateWrapper<Self, K, Self::Cache>
     where
         Self: Sized,
         K: Iterator<Item = String>,
     {
-        UpdateWrapper::new(self, keys, cache)
+        UpdateWrapper::new(self, keys, cache.clone())
     }
 }

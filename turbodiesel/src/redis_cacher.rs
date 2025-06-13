@@ -1,11 +1,13 @@
-use crate::cacher::Cacher;
+use crate::cacher::CacheHandle;
+use async_std::task;
 use itertools::process_results;
 use redis;
 use redis::Commands;
 use redis::RedisError;
+use serde::de::DeserializeOwned;
+use serde::ser::Serialize;
 use std::collections::HashMap;
 use std::time::Duration;
-use async_std::task;
 
 pub struct RedisCache {
     client: redis::Client,
@@ -15,6 +17,20 @@ impl RedisCache {
     pub fn new(redis_url: &str) -> Result<Self, RedisError> {
         let client = redis::Client::open(redis_url)?;
         Ok(RedisCache { client })
+    }
+
+    pub fn handle(&self) -> RedisCacheHandle {
+        RedisCacheHandle::new(self.client.clone())
+    }
+}
+
+pub struct RedisCacheHandle {
+    client: redis::Client,
+}
+
+impl RedisCacheHandle {
+    pub fn new(client: redis::Client) -> Self {
+        RedisCacheHandle { client }
     }
 
     pub fn scan_keys(&self, pattern: &str) -> Result<HashMap<String, String>, RedisError> {
@@ -41,39 +57,48 @@ impl RedisCache {
             }
             task::sleep(Duration::from_secs(1)).await;
         }
-        Err(RedisError::from((redis::ErrorKind::IoError, "Redis is not online")))
+        Err(RedisError::from((
+            redis::ErrorKind::IoError,
+            "Redis is not online",
+        )))
     }
 }
 
-impl Cacher for RedisCache {
-    type Key = String;
-    type Value = String;
-
-    fn get(&self, key: &String) -> Option<String> {
+impl CacheHandle for RedisCacheHandle {
+    fn get<V: Serialize + DeserializeOwned>(&self, key: &String) -> Option<V> {
         let mut con = self
             .client
             .get_connection()
             .expect("Failed to connect to Redis");
         con.get::<_, Option<String>>(key)
             .expect("Failed to get value from Redis")
+            .and_then(|v| serde_json::from_str(&v).ok())
     }
 
-    fn put(&mut self, key: String, value: String) {
+    fn put<V: Serialize + DeserializeOwned>(&mut self, key: &String, value: &V) {
         let mut con = self
             .client
             .get_connection()
             .expect("Failed to connect to Redis");
-        con.set::<&str, String, ()>(&key, value)
+        con.set::<&str, String, ()>(&key, serde_json::to_string(value).unwrap())
             .expect("Failed to set value in Redis");
     }
 
-    fn delete(&mut self, key: String) {
+    fn delete(&mut self, key: &String) {
         let mut con = self
             .client
             .get_connection()
             .expect("Failed to connect to Redis");
-        con.del::<&str, ()>(&key)
+        con.del::<&str, ()>(key)
             .expect("Failed to delete key from Redis");
+    }
+}
+
+impl Clone for RedisCacheHandle {
+    fn clone(&self) -> Self {
+        RedisCacheHandle {
+            client: self.client.clone(),
+        }
     }
 }
 
@@ -96,25 +121,29 @@ mod tests {
         println!("Running Redis integration test...");
         test.run(|_| async move {
             let redis_url = "redis://localhost:6380";
-            let mut cacher = RedisCache::new(redis_url).expect("Failed to create RedisCache");
-            cacher.wait_until_online(6).await.expect("Redis is not online after retries");
+            let cache = RedisCache::new(redis_url).expect("Failed to create RedisCache");
+            let mut handle = cache.handle();
+            handle
+                .wait_until_online(6)
+                .await
+                .expect("Redis is not online after retries");
 
-            let key = "test_key";
-            let value = "test_value";
+            let key = "test_key".to_string();
+            let value = "test_value".to_string();
 
             // Test put
-            cacher.put(key.to_string(), value.to_string());
+            handle.put(&key, &value);
 
             // Test get
-            let retrieved_value: Option<String> = cacher.get(&key.to_string());
+            let retrieved_value: Option<String> = handle.get(&key);
             assert_eq!(
                 retrieved_value,
-                Some(value.to_string()),
+                Some(value),
                 "Retrieved value does not match set value"
             );
 
             // Clean up
-            cacher.delete(key.to_string());
+            handle.delete(&key);
         });
         println!("Redis integration test completed successfully.");
     }

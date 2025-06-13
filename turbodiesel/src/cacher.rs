@@ -2,106 +2,63 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::hash::Hash;
-use std::marker::PhantomData;
 use std::rc::Rc;
 
 #[derive(Debug)]
-pub struct Cache<K: Eq + Hash, V> {
-    map: HashMap<K, V>,
+pub struct HashmapCache {
+    map: Rc<RefCell<HashMap<String, String>>>,
 }
 
-pub type StringCache = Cache<String, String>;
+impl HashmapCache {
+    pub fn new() -> Self {
+        HashmapCache {
+            map: Rc::new(RefCell::new(HashMap::new())),
+        }
+    }
 
-pub trait Cacher {
-    type Key: Eq + Hash;
-    type Value;
-
-    fn get(&self, key: &Self::Key) -> Option<Self::Value>;
-    fn put(&mut self, key: Self::Key, value: Self::Value);
-    fn delete(&mut self, key: Self::Key);
-}
-
-impl<K: Eq + Hash, V> Cache<K, V> {
-    pub fn new() -> Cache<K, V> {
-        Cache {
-            map: HashMap::new(),
+    pub fn handle(&self) -> HashmapCacheHandle {
+        HashmapCacheHandle {
+            map: Rc::clone(&self.map),
         }
     }
 }
 
-impl<K: Eq + Hash, V> Cacher for Cache<K, V>
-where
-    V: Clone,
-{
-    type Key = K;
-    type Value = V;
+pub struct HashmapCacheHandle {
+    map: Rc<RefCell<HashMap<String, String>>>,
+}
 
-    fn get(&self, key: &K) -> Option<V> {
-        self.map.get(key).cloned()
-    }
-    fn put(&mut self, key: K, value: V) {
-        self.map.insert(key, value);
+pub trait CacheHandle : Clone {
+    fn get<V: Serialize + DeserializeOwned>(&self, key: &String) -> Option<V>;
+    fn put<V: Serialize + DeserializeOwned>(&mut self, key: &String, value: &V);
+    fn delete(&mut self, key: &String);
+}
+
+impl CacheHandle for HashmapCacheHandle {
+    fn get<V: Serialize + DeserializeOwned>(&self, key: &String) -> Option<V> {
+        self.map.borrow().get(key).map(|v| {
+            serde_json::from_str(v.as_str())
+                .unwrap_or_else(|_| panic!("Failed to deserialize value for key: {}", key))
+        })
     }
 
-    fn delete(&mut self, key: K) {
-        self.map.remove(&key);
+    fn put<V: Serialize + DeserializeOwned>(&mut self, key: &String, value: &V) {
+        self.map.borrow_mut().insert(
+            key.clone(),
+            serde_json::to_string(value)
+                .unwrap_or_else(|_| panic!("Failed to serialize value for key: {}", key)),
+        );
+    }
+
+    fn delete(&mut self, key: &String) {
+        self.map.borrow_mut().remove(key);
     }
 }
 
-pub trait CachingStrategy {
-    type Item: Serialize + DeserializeOwned;
-
-    fn put_in_cache(&self, key: String, value: String);
-
-    fn get_from_cache(&self, key: &String) -> Option<String>;
-
-    fn put_item(&self, key: &String, item: &Self::Item) {
-        self.put_in_cache(key.clone(), serde_json::to_string(item).unwrap());
-    }
-
-    fn get_item(&self, key: &String) -> Option<Self::Item> {
-        self.get_from_cache(key)
-            .map(|s| serde_json::from_str(s.as_str()).unwrap())
-    }
-}
-
-pub struct InMemoryCachingStrategy<C, U>
-where
-    C: Cacher<Key = String, Value = String>,
-    U: Serialize + DeserializeOwned,
-{
-    cache: Rc<RefCell<C>>,
-    phantom_data: PhantomData<U>,
-}
-
-impl<C, U> InMemoryCachingStrategy<C, U>
-where
-    C: Cacher<Key = String, Value = String>,
-    U: Serialize + DeserializeOwned,
-{
-    pub fn new(cache: Rc<RefCell<C>>) -> Self {
-        Self {
-            cache,
-            phantom_data: PhantomData,
+impl Clone for HashmapCacheHandle {
+    fn clone(&self) -> Self {
+        HashmapCacheHandle {
+            map: Rc::clone(&self.map),
         }
-    }
-}
-
-impl<C, U> CachingStrategy for InMemoryCachingStrategy<C, U>
-where
-    C: Cacher<Key = String, Value = String>,
-    U: Serialize + DeserializeOwned,
-{
-    type Item = U;
-
-    fn put_in_cache(&self, key: String, value: String) {
-        let mut c = self.cache.borrow_mut();
-        c.put(key, value);
-    }
-
-    fn get_from_cache(&self, key: &String) -> Option<String> {
-        self.cache.borrow().get(key).map(|x| x.clone())
     }
 }
 
@@ -111,27 +68,24 @@ mod tests {
 
     #[test]
     fn test_string_cache_put_and_get() {
-        // Create an instance of StringCache
-        let cache = Rc::new(RefCell::new(StringCache::new()));
-
-        // Create an instance of InMemoryCachingStrategy using the StringCache
-        let caching_strategy = InMemoryCachingStrategy::new(cache.clone());
+        let cache = HashmapCache::new();
+        let mut handle = cache.handle();
 
         // Define a key and value to be used in the test
         let key = "test_key".to_string();
         let value = "test_value".to_string();
 
         // Put the item into the cache
-        caching_strategy.put_item(&key, &value);
+        handle.put(&key, &value);
 
         // Get the item from the cache
-        let retrieved_value = caching_strategy.get_item(&key);
+        let retrieved_value = handle.get(&key);
 
         // Assert that the retrieved value matches the expected value
         assert_eq!(retrieved_value, Some(value));
 
         let non_existing_key = "other_key".to_string();
-        let retrieved_not_found = caching_strategy.get_item(&non_existing_key);
+        let retrieved_not_found = handle.get::<String>(&non_existing_key);
 
         assert_eq!(retrieved_not_found, None);
     }
