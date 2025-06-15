@@ -63,6 +63,22 @@ impl RedisCacheHandle {
             "Redis is not online",
         )))
     }
+
+    pub fn load_redis_functions(&self) -> Result<(), RedisError> {
+        let script = include_str!("../lua/functions.lua");
+        let mut con = self.client.get_connection()?;
+        con.send_packed_command(
+            redis::cmd("FUNCTION")
+                .arg("LOAD")
+                .arg("REPLACE")
+                .arg(script)
+                .get_packed_command()
+                .as_slice(),
+        )?;
+        let response = con.recv_response()?;
+        println!("Loaded Redis functions for module: {:?}", response);
+        Ok(())
+    }
 }
 
 impl CacheHandle for RedisCacheHandle {
@@ -71,15 +87,32 @@ impl CacheHandle for RedisCacheHandle {
             .client
             .get_connection()
             .expect("Failed to connect to Redis");
-        con.get::<_, Option<String>>(key)
-            .expect("Failed to get value from Redis")
-            .and_then(|v| {
-                let value = serde_json::from_str(v.as_str()).ok();
-                value.map(|v: serde_json::Value| {
-                    let untyped_val = v.get("value".to_string()).unwrap().clone();
-                    serde_json::from_value(untyped_val).unwrap()
-                })
-            })
+        con.send_packed_command(
+            redis::cmd("FCALL")
+                .arg("td_get")
+                .arg(1)
+                .arg(key)
+                .get_packed_command()
+                .as_slice(),
+        )
+        .expect("Failed to call Redis function");
+        let response = con
+            .recv_response()
+            .expect("Failed to receive response from Redis function call");
+        println!("Response from Redis td_get function call: {:?}", response);
+        match response {
+            redis::Value::Nil => return None,
+            redis::Value::SimpleString(str_value) => {
+                let value: V = serde_json::from_str(str_value.as_str()).ok()?;
+                return Some(value);
+            }
+            redis::Value::BulkString(data) => {
+                let str_value = String::from_utf8(data).ok()?;
+                let value: V = serde_json::from_str(&str_value).ok()?;
+                return Some(value);
+            }
+            _ => panic!("Unexpected response type from Redis function call"),
+        }
     }
 
     fn put<V: Serialize + DeserializeOwned>(&mut self, key: &String, value: &V) {
@@ -89,14 +122,23 @@ impl CacheHandle for RedisCacheHandle {
             .expect("Failed to connect to Redis");
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64();
-        let json_value = serde_json::json!({
-            "value": value,
-            "timestamp": now,
-        });
-        con.set::<&str, String, ()>(&key, serde_json::to_string(&json_value).unwrap())
-            .expect("Failed to set value in Redis");
+            .unwrap();
+        con.send_packed_command(
+            redis::cmd("FCALL")
+                .arg("td_set")
+                .arg(1)
+                .arg(key)
+                .arg(serde_json::to_string(value).unwrap())
+                .arg(now.as_secs())
+                .arg(now.subsec_nanos())
+                .get_packed_command()
+                .as_slice(),
+        )
+        .expect("Failed to call Redis function");
+        let response = con
+            .recv_response()
+            .expect("Failed to receive response from Redis function call");
+        println!("Response from Redis td_set function call: {:?}", response);
     }
 
     fn delete(&mut self, key: &String) {
@@ -104,8 +146,27 @@ impl CacheHandle for RedisCacheHandle {
             .client
             .get_connection()
             .expect("Failed to connect to Redis");
-        con.del::<&str, ()>(key)
-            .expect("Failed to delete key from Redis");
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap();
+        con.send_packed_command(
+            redis::cmd("FCALL")
+                .arg("td_invalidate")
+                .arg(1)
+                .arg(key)
+                .arg(now.as_secs())
+                .arg(now.subsec_nanos())
+                .get_packed_command()
+                .as_slice(),
+        )
+        .expect("Failed to call Redis td_invalidate function");
+        let response = con
+            .recv_response()
+            .expect("Failed to receive response from Redis function call");
+        println!(
+            "Response from Redis td_invalidate function call: {:?}",
+            response
+        );
     }
 }
 
@@ -142,6 +203,9 @@ mod tests {
                 .wait_until_online(6)
                 .await
                 .expect("Redis is not online after retries");
+            handle
+                .load_redis_functions()
+                .expect("Failed to load Redis functions");
 
             let key = "test_key".to_string();
             let value = "test_value".to_string();
@@ -157,8 +221,15 @@ mod tests {
                 "Retrieved value does not match set value"
             );
 
-            // Clean up
+            // Test delete
             handle.delete(&key);
+
+            // Test get
+            let empty: Option<String> = handle.get(&key);
+            assert_eq!(
+                empty, None,
+                "Retrieved value expected to be None after deletion"
+            );
         });
         println!("Redis integration test completed successfully.");
     }
