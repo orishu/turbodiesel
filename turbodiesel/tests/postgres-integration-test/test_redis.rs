@@ -8,6 +8,7 @@ fn set_and_get() {
 
     let key = "test_key".to_string();
     let value = "test_value".to_string();
+    handle.raw_delete(&key);
     handle.put(&key, &value);
     let retrieved_value: Option<String> = handle.get(&key);
     assert_eq!(

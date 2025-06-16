@@ -1,6 +1,5 @@
 use crate::cacher::CacheHandle;
 use async_std::task;
-use itertools::process_results;
 use redis;
 use redis::Commands;
 use redis::RedisError;
@@ -32,17 +31,6 @@ pub struct RedisCacheHandle {
 impl RedisCacheHandle {
     pub fn new(client: redis::Client) -> Self {
         RedisCacheHandle { client }
-    }
-
-    pub fn scan_keys(&self, pattern: &str) -> Result<HashMap<String, String>, RedisError> {
-        let mut con = self.client.get_connection()?;
-        let keys: Vec<String> = con.keys(pattern)?;
-
-        process_results(
-            keys.into_iter()
-                .map(|k| Ok((k.clone(), con.get::<_, Option<String>>(k)?.unwrap()))),
-            |iter| iter.collect(),
-        )
     }
 
     pub fn check_online(&self) -> Result<(), RedisError> {
@@ -79,10 +67,8 @@ impl RedisCacheHandle {
         println!("Loaded Redis functions for module: {:?}", response);
         Ok(())
     }
-}
 
-impl CacheHandle for RedisCacheHandle {
-    fn get<V: Serialize + DeserializeOwned>(&self, key: &String) -> Option<V> {
+    fn raw_get(&self, key: &String) -> Option<redis::Value> {
         let mut con = self
             .client
             .get_connection()
@@ -101,17 +87,39 @@ impl CacheHandle for RedisCacheHandle {
             .expect("Failed to receive response from Redis function call");
         println!("Response from Redis td_get function call: {:?}", response);
         match response {
-            redis::Value::Nil => return None,
-            redis::Value::SimpleString(str_value) => {
-                let value: V = serde_json::from_str(str_value.as_str()).ok()?;
-                return Some(value);
-            }
-            redis::Value::BulkString(data) => {
-                let str_value = String::from_utf8(data).ok()?;
-                let value: V = serde_json::from_str(&str_value).ok()?;
-                return Some(value);
-            }
-            _ => panic!("Unexpected response type from Redis function call"),
+            redis::Value::Nil => None,
+            _ => Some(response),
+        }
+    }
+
+    pub fn raw_delete(&mut self, key: &String) {
+        let mut con = self
+            .client
+            .get_connection()
+            .expect("Failed to connect to Redis");
+        _ = con.del::<_, ()>(key);
+    }
+}
+
+impl CacheHandle for RedisCacheHandle {
+    type Error = RedisError;
+
+    fn get<V: Serialize + DeserializeOwned>(&self, key: &String) -> Option<V> {
+        match self.raw_get(key) {
+            Some(value) => match value {
+                redis::Value::SimpleString(str_value) => {
+                    let deserialized: V = serde_json::from_str(str_value.as_str()).ok()?;
+                    Some(deserialized)
+                }
+                redis::Value::BulkString(data) => {
+                    let str_value = String::from_utf8(data).ok()?;
+                    let deserialized: V = serde_json::from_str(&str_value).ok()?;
+                    Some(deserialized)
+                }
+                redis::Value::Nil => None,
+                _ => panic!("Unexpected response type from Redis function call"),
+            },
+            None => None,
         }
     }
 
@@ -168,6 +176,20 @@ impl CacheHandle for RedisCacheHandle {
             response
         );
     }
+
+    fn scan_keys(&self, pattern: &str) -> Result<HashMap<String, String>, Self::Error> {
+        let mut con = self.client.get_connection()?;
+        let keys: Vec<String> = con.keys(pattern)?;
+
+        Ok(keys
+            .iter()
+            .map(|k| (k.clone(), self.raw_get(&k)))
+            .filter_map(|x| match x {
+                (k, Some(v)) => Some((k, format!("{:?}", v))),
+                _ => None,
+            })
+            .collect())
+    }
 }
 
 impl Clone for RedisCacheHandle {
@@ -219,6 +241,16 @@ mod tests {
                 retrieved_value,
                 Some(value),
                 "Retrieved value does not match set value"
+            );
+
+            // Test scan keys
+            let scan_result = handle.scan_keys("test_key*").expect("Failed to scan keys");
+            assert_eq!(scan_result.len(), 1, "Expected one key in scan result");
+            let expected_raw_value = "bulk-string('\"\\\"test_value\\\"\"')".to_string();
+            assert_eq!(
+                scan_result.get(&"test_key".to_string()),
+                Some(&expected_raw_value),
+                "Scan result does not match expected value"
             );
 
             // Test delete

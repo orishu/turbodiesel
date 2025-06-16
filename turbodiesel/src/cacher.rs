@@ -27,13 +27,18 @@ pub struct HashmapCacheHandle {
     map: Rc<RefCell<HashMap<String, String>>>,
 }
 
-pub trait CacheHandle : Clone {
+pub trait CacheHandle: Clone {
+    type Error: std::error::Error;
+
     fn get<V: Serialize + DeserializeOwned>(&self, key: &String) -> Option<V>;
     fn put<V: Serialize + DeserializeOwned>(&mut self, key: &String, value: &V);
     fn delete(&mut self, key: &String);
+    fn scan_keys(&self, pattern: &str) -> Result<HashMap<String, String>, Self::Error>;
 }
 
 impl CacheHandle for HashmapCacheHandle {
+    type Error = std::fmt::Error;
+
     fn get<V: Serialize + DeserializeOwned>(&self, key: &String) -> Option<V> {
         self.map.borrow().get(key).map(|v| {
             serde_json::from_str(v.as_str())
@@ -51,6 +56,17 @@ impl CacheHandle for HashmapCacheHandle {
 
     fn delete(&mut self, key: &String) {
         self.map.borrow_mut().remove(key);
+    }
+
+    fn scan_keys(&self, pattern: &str) -> Result<HashMap<String, String>, Self::Error> {
+        let wild = wildmatch::WildMatch::new(pattern);
+        Ok(self
+            .map
+            .borrow()
+            .iter()
+            .filter(|(k, _)| wild.matches(k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect::<HashMap<String, String>>())
     }
 }
 

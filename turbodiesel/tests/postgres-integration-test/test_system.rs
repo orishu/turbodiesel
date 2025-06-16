@@ -118,7 +118,7 @@ fn system_test_with_inmemory_cache() {
 #[test]
 #[cfg(feature = "redis")]
 fn system_test_with_redis() {
-    use turbodiesel::redis_cacher::RedisCache;
+    use turbodiesel::{cacher::CacheHandle, redis_cacher::RedisCache};
 
     let cache = RedisCache::new("redis://localhost:6379").expect("Failed to create RedisCache");
     let handle = cache.handle();

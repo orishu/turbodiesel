@@ -45,6 +45,9 @@ local function td_get(keys, args)
   local key = keys[1]
 
   local record = redis.call("HGETALL", key) -- Expected format: {'ts_sec', seconds, 'ts_nsec', nseconds, 'v', value}
+  if record[1] == nil then
+    return nil -- Not in cache
+  end
   local sec = tonumber(record[2])
   local nsec = tonumber(record[4])
   local value = record[6]
