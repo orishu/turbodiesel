@@ -1,5 +1,6 @@
 use crate::cacher::CacheHandle;
 use async_std::task;
+use log::info;
 use redis;
 use redis::Commands;
 use redis::RedisError;
@@ -64,7 +65,7 @@ impl RedisCacheHandle {
                 .as_slice(),
         )?;
         let response = con.recv_response()?;
-        println!("Loaded Redis functions for module: {:?}", response);
+        info!("Loaded Redis functions for module: {:?}", response);
         Ok(())
     }
 
@@ -85,7 +86,7 @@ impl RedisCacheHandle {
         let response = con
             .recv_response()
             .expect("Failed to receive response from Redis function call");
-        println!("Response from Redis td_get function call: {:?}", response);
+        info!("Response from Redis td_get function call: {:?}", response);
         match response {
             redis::Value::Nil => None,
             _ => Some(response),
@@ -146,7 +147,7 @@ impl CacheHandle for RedisCacheHandle {
         let response = con
             .recv_response()
             .expect("Failed to receive response from Redis function call");
-        println!("Response from Redis td_set function call: {:?}", response);
+        info!("Response from Redis td_set function call: {:?}", response);
     }
 
     fn delete(&mut self, key: &String) {
@@ -171,7 +172,7 @@ impl CacheHandle for RedisCacheHandle {
         let response = con
             .recv_response()
             .expect("Failed to receive response from Redis function call");
-        println!(
+        info!(
             "Response from Redis td_invalidate function call: {:?}",
             response
         );
@@ -207,6 +208,17 @@ mod tests {
 
     use super::*;
 
+    #[cfg(test)]
+    #[ctor::ctor]
+    fn init() {
+        crate::test_utils::init_logging_for_tests();
+    }
+
+    #[test]
+    fn test_tmp() {
+        info!("ORIORI");
+    }
+
     #[test]
     fn test_redis_get_and_set() {
         dotenv().ok();
@@ -216,7 +228,7 @@ mod tests {
         redis_container.modify_port_map(6379, 6380);
         let mut test = DockerTest::new();
         test.provide_container(redis_container);
-        println!("Running Redis integration test...");
+        info!("Running Redis integration test...");
         test.run(|_| async move {
             let redis_url = "redis://localhost:6380";
             let cache = RedisCache::new(redis_url).expect("Failed to create RedisCache");
@@ -263,6 +275,6 @@ mod tests {
                 "Retrieved value expected to be None after deletion"
             );
         });
-        println!("Redis integration test completed successfully.");
+        info!("Redis integration test completed successfully.");
     }
 }

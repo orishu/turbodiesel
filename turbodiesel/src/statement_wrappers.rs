@@ -3,6 +3,7 @@ use diesel::connection::Connection;
 use diesel::query_dsl::load_dsl::ExecuteDsl;
 use diesel::query_dsl::{LoadQuery, RunQueryDsl};
 use diesel::result::QueryResult;
+use log::info;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -27,10 +28,10 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         let item = self.inner.next();
         if let Some(ref it_res) = item {
-            println!("Item result is {:?}", it_res);
+            info!("Item result is {:?}", it_res);
             if let Ok(it) = it_res {
                 self.cache.put::<U>(&it.1, &it.0);
-                println!("Item cached (2)");
+                info!("Item cached (2)");
             }
         }
         item.map(|r| r.map(|pair| pair.0))
@@ -74,11 +75,11 @@ where
         let key = self.keys.next()?;
         match self.cache.get::<U>(&key) {
             Some(cached_val) => {
-                println!("Cache hit for key: {}", key);
+                info!("Cache hit for key: {}", key);
                 Some(Ok(cached_val))
             }
             None => {
-                println!("Cache miss for key: {}, reading from inner", key);
+                info!("Cache miss for key: {}, reading from inner", key);
                 match self.inner.next() {
                     Some(Ok(val)) => {
                         self.cache.put::<U>(&key, &val);
@@ -138,7 +139,7 @@ where
         Conn: 'a;
 
     fn internal_load(self, conn: &mut Conn) -> QueryResult<Self::RowIter<'_>> {
-        println!("In internal_load (2)");
+        info!("In internal_load (2)");
 
         let load_iter = self.inner_select.internal_load(conn)?;
         let caching_iter = ResultCachingIterator {
@@ -206,7 +207,7 @@ where
         Conn: 'a;
 
     fn internal_load(self, conn: &mut Conn) -> QueryResult<Self::RowIter<'_>> {
-        println!("In internal_load (1)");
+        info!("In internal_load (1)");
 
         let load_iter = self.inner_select.internal_load(conn)?;
         let lookup_iter = ResultCacheLookupIterator::new(load_iter, self.cache, self.keys);
@@ -284,7 +285,7 @@ where
 {
     fn execute(query: Self, conn: &mut Conn) -> QueryResult<usize> {
         query.keys.for_each(|key| {
-            println!("Invalidating cache for key: {}", key);
+            info!("Invalidating cache for key: {}", key);
             query.cache.clone().delete(&key);
         });
         ExecuteDsl::<Conn, Conn::Backend>::execute(query.inner_update, conn)

@@ -10,6 +10,14 @@ use diesel::sql_types::Text;
 use julian::{Calendar, Month, system2jdn};
 use lazy_static::lazy_static;
 use turbodiesel::statement_wrappers::*;
+use log::info;
+
+
+#[cfg(test)]
+#[ctor::ctor]
+fn init() {
+    crate::test_utils::init_logging_for_tests();
+}
 
 #[test]
 fn simple_insert_using_diesel() {
@@ -76,10 +84,10 @@ fn system_test_with_inmemory_cache() {
         .load_iter::<Student, DefaultLoadingMode>(connection)
         .expect("Error loading student")
         .for_each(|student| {
-            println!("Student: {:?}", student.unwrap());
+            info!("Student: {:?}", student.unwrap());
         });
 
-    println!("cache: {:?}", cache);
+    info!("cache: {:?}", cache);
 
     students::dsl::students
         .select(Student::as_select())
@@ -91,10 +99,10 @@ fn system_test_with_inmemory_cache() {
         .load_iter::<Student, DefaultLoadingMode>(connection)
         .expect("Error loading student")
         .for_each(|student| {
-            println!("Student: {:?}", student.unwrap());
+            info!("Student: {:?}", student.unwrap());
         });
 
-    println!("Cache before update: {:?}", cache);
+    info!("Cache before update: {:?}", cache);
     diesel::update(students::table)
         .set(students::dsl::name.eq("Ori2"))
         .filter(students::dsl::id.eq(2))
@@ -102,7 +110,7 @@ fn system_test_with_inmemory_cache() {
         .execute(connection)
         .expect("Error updating students");
 
-    println!("Cache after update: {:?}", cache);
+    info!("Cache after update: {:?}", cache);
 
     students::dsl::students
         .select(Student::as_select())
@@ -111,7 +119,7 @@ fn system_test_with_inmemory_cache() {
         .load_iter::<Student, DefaultLoadingMode>(connection)
         .expect("Error loading student")
         .for_each(|student| {
-            println!("Student: {:?}", student.unwrap());
+            info!("Student: {:?}", student.unwrap());
         });
 }
 
@@ -139,7 +147,7 @@ fn system_test_with_redis() {
         .load_iter::<Student, DefaultLoadingMode>(connection)
         .expect("Error loading student")
         .for_each(|student| {
-            println!("Student: {:?}", student.unwrap());
+            info!("Student: {:?}", student.unwrap());
         });
 
     students::dsl::students
@@ -152,10 +160,10 @@ fn system_test_with_redis() {
         .load_iter::<Student, DefaultLoadingMode>(connection)
         .expect("Error loading student")
         .for_each(|student| {
-            println!("Student: {:?}", student.unwrap());
+            info!("Student: {:?}", student.unwrap());
         });
 
-    println!(
+    info!(
         "Cache before update: {:?}",
         handle.scan_keys("student:*").unwrap()
     );
@@ -165,7 +173,7 @@ fn system_test_with_redis() {
         .invalidate_key(handle.clone(), "student:2")
         .execute(connection)
         .expect("Error updating students");
-    println!(
+    info!(
         "Cache after update: {:?}",
         handle.scan_keys("student:*").unwrap()
     );
@@ -177,7 +185,7 @@ fn system_test_with_redis() {
         .load_iter::<Student, DefaultLoadingMode>(connection)
         .expect("Error loading student")
         .for_each(|student| {
-            println!("Student: {:?}", student.unwrap());
+            info!("Student: {:?}", student.unwrap());
         });
 }
 
@@ -201,7 +209,7 @@ fn test_basic_json_serialization() {
         dob: Some(date_from_string("1978-02-16")),
     };
     let serialized = serde_json::to_string(&student).unwrap();
-    println!("Serialized student: {}", serialized);
+    info!("Serialized student: {}", serialized);
     let deserialized: Student = serde_json::from_str(&serialized).unwrap();
     assert_eq!(student, deserialized);
 }

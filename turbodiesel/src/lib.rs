@@ -11,3 +11,6 @@ pub mod statement_extension_inmemory;
 
 #[cfg(feature = "redis")]
 pub mod statement_extension_redis;
+
+#[cfg(test)]
+pub mod test_utils;
