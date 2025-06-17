@@ -3,7 +3,8 @@ use diesel::connection::Connection;
 use diesel::query_dsl::load_dsl::ExecuteDsl;
 use diesel::query_dsl::{LoadQuery, RunQueryDsl};
 use diesel::result::QueryResult;
-use log::info;
+use itertools::process_results;
+use log::{debug, error, info, warn};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -30,8 +31,12 @@ where
         if let Some(ref it_res) = item {
             info!("Item result is {:?}", it_res);
             if let Ok(it) = it_res {
-                self.cache.put::<U>(&it.1, &it.0);
-                info!("Item cached (2)");
+                let res = self.cache.put::<U>(&it.1, &it.0);
+                if let Err(e) = res {
+                    warn!("Error caching value for key {}: {}", it.1, e);
+                } else {
+                    debug!("Item cached");
+                }
             }
         }
         item.map(|r| r.map(|pair| pair.0))
@@ -60,6 +65,20 @@ where
     fn new(inner: I, cache: C, keys: K) -> Self {
         Self { inner, keys, cache }
     }
+
+    fn call_inner_and_cache(&mut self, key: &String) -> Option<QueryResult<U>> {
+        match self.inner.next() {
+            Some(Ok(val)) => {
+                let res = self.cache.put::<U>(key, &val);
+                if let Err(e) = res {
+                    warn!("Error caching value for key {}: {}", key, e);
+                }
+                Some(Ok(val))
+            }
+            Some(Err(e)) => Some(Err(e)),
+            None => None,
+        }
+    }
 }
 
 impl<I, U, C, K> Iterator for ResultCacheLookupIterator<I, U, C, K>
@@ -74,20 +93,19 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         let key = self.keys.next()?;
         match self.cache.get::<U>(&key) {
-            Some(cached_val) => {
-                info!("Cache hit for key: {}", key);
+            Ok(Some(cached_val)) => {
+                debug!("Cache hit for key: {}", key);
                 Some(Ok(cached_val))
             }
-            None => {
-                info!("Cache miss for key: {}, reading from inner", key);
-                match self.inner.next() {
-                    Some(Ok(val)) => {
-                        self.cache.put::<U>(&key, &val);
-                        Some(Ok(val))
-                    }
-                    Some(Err(e)) => Some(Err(e)),
-                    None => None,
-                }
+            Ok(None) => {
+                debug!("Cache miss for key: {}, reading from inner", key);
+                self.call_inner_and_cache(&key);
+                None
+            }
+            Err(e) => {
+                warn!("Error retrieving from cache for key: {}; error {}", key, e);
+                self.call_inner_and_cache(&key);
+                None
             }
         }
     }
@@ -139,7 +157,7 @@ where
         Conn: 'a;
 
     fn internal_load(self, conn: &mut Conn) -> QueryResult<Self::RowIter<'_>> {
-        info!("In internal_load (2)");
+        debug!("In internal_load (2)");
 
         let load_iter = self.inner_select.internal_load(conn)?;
         let caching_iter = ResultCachingIterator {
@@ -207,7 +225,7 @@ where
         Conn: 'a;
 
     fn internal_load(self, conn: &mut Conn) -> QueryResult<Self::RowIter<'_>> {
-        info!("In internal_load (1)");
+        debug!("In internal_load (1)");
 
         let load_iter = self.inner_select.internal_load(conn)?;
         let lookup_iter = ResultCacheLookupIterator::new(load_iter, self.cache, self.keys);
@@ -284,10 +302,18 @@ where
     C: CacheHandle,
 {
     fn execute(query: Self, conn: &mut Conn) -> QueryResult<usize> {
-        query.keys.for_each(|key| {
-            info!("Invalidating cache for key: {}", key);
-            query.cache.clone().delete(&key);
+        let cache = &query.cache;
+        let delete_results = query.keys.into_iter().map(|key| {
+            debug!("Invalidating cache for key: {}", key);
+            match cache.clone().delete(&key) {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    error!("Error deleting key {} from cache: {}", key, e);
+                    Err(diesel::result::Error::RollbackTransaction)
+                }
+            }
         });
+        process_results(delete_results, |_| ())?;
         ExecuteDsl::<Conn, Conn::Backend>::execute(query.inner_update, conn)
     }
 }

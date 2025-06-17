@@ -1,3 +1,4 @@
+use crate::cacher::CacheError;
 use crate::cacher::CacheHandle;
 use async_std::task;
 use log::info;
@@ -103,35 +104,41 @@ impl RedisCacheHandle {
 }
 
 impl CacheHandle for RedisCacheHandle {
-    type Error = RedisError;
-
-    fn get<V: Serialize + DeserializeOwned>(&self, key: &String) -> Option<V> {
+    fn get<V: Serialize + DeserializeOwned>(&self, key: &String) -> Result<Option<V>, CacheError> {
         match self.raw_get(key) {
             Some(value) => match value {
                 redis::Value::SimpleString(str_value) => {
-                    let deserialized: V = serde_json::from_str(str_value.as_str()).ok()?;
-                    Some(deserialized)
+                    let deserialized: V = serde_json::from_str(str_value.as_str())
+                        .map_err(|e| CacheError::with_cause("Failed to deserialize value", e))?;
+                    Ok(Some(deserialized))
                 }
                 redis::Value::BulkString(data) => {
-                    let str_value = String::from_utf8(data).ok()?;
-                    let deserialized: V = serde_json::from_str(&str_value).ok()?;
-                    Some(deserialized)
+                    let str_value = String::from_utf8(data).map_err(|e| {
+                        CacheError::with_cause("Failed to convert bulk string to UTF-8", e)
+                    })?;
+                    let deserialized: V = serde_json::from_str(&str_value)
+                        .map_err(|e| CacheError::with_cause("Failed to deserialize value", e))?;
+                    Ok(Some(deserialized))
                 }
-                redis::Value::Nil => None,
+                redis::Value::Nil => Ok(None),
                 _ => panic!("Unexpected response type from Redis function call"),
             },
-            None => None,
+            None => Ok(None),
         }
     }
 
-    fn put<V: Serialize + DeserializeOwned>(&mut self, key: &String, value: &V) {
+    fn put<V: Serialize + DeserializeOwned>(
+        &mut self,
+        key: &String,
+        value: &V,
+    ) -> Result<(), CacheError> {
         let mut con = self
             .client
             .get_connection()
-            .expect("Failed to connect to Redis");
+            .map_err(|e| CacheError::with_cause("Failed to connect to Redis", e))?;
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap();
+            .map_err(|e| CacheError::with_cause("Failed to get current time", e))?;
         con.send_packed_command(
             redis::cmd("FCALL")
                 .arg("td_set")
@@ -143,21 +150,22 @@ impl CacheHandle for RedisCacheHandle {
                 .get_packed_command()
                 .as_slice(),
         )
-        .expect("Failed to call Redis function");
-        let response = con
-            .recv_response()
-            .expect("Failed to receive response from Redis function call");
+        .map_err(|e| CacheError::with_cause("Failed to call Redis td_set function", e))?;
+        let response = con.recv_response().map_err(|e| {
+            CacheError::with_cause("Failed to receive response from Redis function call", e)
+        })?;
         info!("Response from Redis td_set function call: {:?}", response);
+        Ok(())
     }
 
-    fn delete(&mut self, key: &String) {
+    fn delete(&mut self, key: &String) -> Result<(), CacheError> {
         let mut con = self
             .client
             .get_connection()
-            .expect("Failed to connect to Redis");
+            .map_err(|e| CacheError::with_cause("Failed to connect to Redis", e))?;
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap();
+            .map_err(|e| CacheError::with_cause("Failed to get current time", e))?;
         con.send_packed_command(
             redis::cmd("FCALL")
                 .arg("td_invalidate")
@@ -168,19 +176,25 @@ impl CacheHandle for RedisCacheHandle {
                 .get_packed_command()
                 .as_slice(),
         )
-        .expect("Failed to call Redis td_invalidate function");
-        let response = con
-            .recv_response()
-            .expect("Failed to receive response from Redis function call");
+        .map_err(|e| CacheError::with_cause("Failed to call Redis td_invalidate function", e))?;
+        let response = con.recv_response().map_err(|e| {
+            CacheError::with_cause("Failed to receive response from Redis function call", e)
+        })?;
         info!(
             "Response from Redis td_invalidate function call: {:?}",
             response
         );
+        Ok(())
     }
 
-    fn scan_keys(&self, pattern: &str) -> Result<HashMap<String, String>, Self::Error> {
-        let mut con = self.client.get_connection()?;
-        let keys: Vec<String> = con.keys(pattern)?;
+    fn scan_keys(&self, pattern: &str) -> Result<HashMap<String, String>, CacheError> {
+        let mut con = self
+            .client
+            .get_connection()
+            .map_err(|e| CacheError::with_cause("Failed to connect to Redis", e))?;
+        let keys: Vec<String> = con
+            .keys(pattern)
+            .map_err(|e| CacheError::with_cause("Failed to scan keys", e))?;
 
         Ok(keys
             .iter()
@@ -215,11 +229,6 @@ mod tests {
     }
 
     #[test]
-    fn test_tmp() {
-        info!("ORIORI");
-    }
-
-    #[test]
     fn test_redis_get_and_set() {
         dotenv().ok();
         let image =
@@ -245,10 +254,13 @@ mod tests {
             let value = "test_value".to_string();
 
             // Test put
-            handle.put(&key, &value);
+            handle
+                .put(&key, &value)
+                .expect("Failed to put value into cache");
 
             // Test get
-            let retrieved_value: Option<String> = handle.get(&key);
+            let retrieved_value: Option<String> =
+                handle.get(&key).expect("Failed to get value from cache");
             assert_eq!(
                 retrieved_value,
                 Some(value),
@@ -266,10 +278,12 @@ mod tests {
             );
 
             // Test delete
-            handle.delete(&key);
+            handle
+                .delete(&key)
+                .expect("Failed to delete key from cache");
 
             // Test get
-            let empty: Option<String> = handle.get(&key);
+            let empty: Option<String> = handle.get(&key).expect("Failed to get value from cache");
             assert_eq!(
                 empty, None,
                 "Retrieved value expected to be None after deletion"

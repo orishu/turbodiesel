@@ -9,8 +9,10 @@ fn set_and_get() {
     let key = "test_key".to_string();
     let value = "test_value".to_string();
     handle.raw_delete(&key);
-    handle.put(&key, &value);
-    let retrieved_value: Option<String> = handle.get(&key);
+    handle
+        .put(&key, &value)
+        .expect("Failed to put value into cache");
+    let retrieved_value: Option<String> = handle.get(&key).expect("Failed to get value from cache");
     assert_eq!(
         retrieved_value,
         Some(value.to_string()),

@@ -9,9 +9,8 @@ use diesel::prelude::*;
 use diesel::sql_types::Text;
 use julian::{Calendar, Month, system2jdn};
 use lazy_static::lazy_static;
-use turbodiesel::statement_wrappers::*;
 use log::info;
-
+use turbodiesel::statement_wrappers::*;
 
 #[cfg(test)]
 #[ctor::ctor]

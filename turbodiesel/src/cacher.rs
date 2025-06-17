@@ -5,6 +5,51 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 #[derive(Debug)]
+pub struct CacheError {
+    message: String,
+    cause: Option<Box<dyn std::error::Error>>,
+}
+
+impl std::fmt::Display for CacheError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CacheError: {}", self.message)?;
+        match &self.cause {
+            Some(cause) => write!(f, " Caused by: {}", cause),
+            None => Ok(()),
+        }
+    }
+}
+
+impl std::error::Error for CacheError {}
+
+impl CacheError {
+    pub fn new(message: &str) -> Self {
+        CacheError {
+            message: message.to_string(),
+            cause: None,
+        }
+    }
+
+    pub fn with_cause<E: std::error::Error + 'static>(message: &str, cause: E) -> Self {
+        CacheError {
+            message: message.to_string(),
+            cause: Some(Box::new(cause)),
+        }
+    }
+}
+
+pub trait CacheHandle: Clone {
+    fn get<V: Serialize + DeserializeOwned>(&self, key: &String) -> Result<Option<V>, CacheError>;
+    fn put<V: Serialize + DeserializeOwned>(
+        &mut self,
+        key: &String,
+        value: &V,
+    ) -> Result<(), CacheError>;
+    fn delete(&mut self, key: &String) -> Result<(), CacheError>;
+    fn scan_keys(&self, pattern: &str) -> Result<HashMap<String, String>, CacheError>;
+}
+
+#[derive(Debug)]
 pub struct HashmapCache {
     map: Rc<RefCell<HashMap<String, String>>>,
 }
@@ -27,38 +72,37 @@ pub struct HashmapCacheHandle {
     map: Rc<RefCell<HashMap<String, String>>>,
 }
 
-pub trait CacheHandle: Clone {
-    type Error: std::error::Error;
-
-    fn get<V: Serialize + DeserializeOwned>(&self, key: &String) -> Option<V>;
-    fn put<V: Serialize + DeserializeOwned>(&mut self, key: &String, value: &V);
-    fn delete(&mut self, key: &String);
-    fn scan_keys(&self, pattern: &str) -> Result<HashMap<String, String>, Self::Error>;
-}
-
 impl CacheHandle for HashmapCacheHandle {
-    type Error = std::fmt::Error;
-
-    fn get<V: Serialize + DeserializeOwned>(&self, key: &String) -> Option<V> {
-        self.map.borrow().get(key).map(|v| {
-            serde_json::from_str(v.as_str())
-                .unwrap_or_else(|_| panic!("Failed to deserialize value for key: {}", key))
-        })
+    fn get<V: Serialize + DeserializeOwned>(&self, key: &String) -> Result<Option<V>, CacheError> {
+        let map = self.map.borrow();
+        let value = map.get(key);
+        match value {
+            Some(v) => serde_json::from_str::<V>(v.as_str())
+                .map(|x| Some(x))
+                .map_err(|e| CacheError::with_cause("Failed to deserialize value", e)),
+            None => Ok(None),
+        }
     }
 
-    fn put<V: Serialize + DeserializeOwned>(&mut self, key: &String, value: &V) {
+    fn put<V: Serialize + DeserializeOwned>(
+        &mut self,
+        key: &String,
+        value: &V,
+    ) -> Result<(), CacheError> {
         self.map.borrow_mut().insert(
             key.clone(),
             serde_json::to_string(value)
-                .unwrap_or_else(|_| panic!("Failed to serialize value for key: {}", key)),
+                .map_err(|e| CacheError::with_cause("Failed to serialize value", e))?,
         );
+        Ok(())
     }
 
-    fn delete(&mut self, key: &String) {
+    fn delete(&mut self, key: &String) -> Result<(), CacheError> {
         self.map.borrow_mut().remove(key);
+        Ok(())
     }
 
-    fn scan_keys(&self, pattern: &str) -> Result<HashMap<String, String>, Self::Error> {
+    fn scan_keys(&self, pattern: &str) -> Result<HashMap<String, String>, CacheError> {
         let wild = wildmatch::WildMatch::new(pattern);
         Ok(self
             .map
@@ -92,16 +136,18 @@ mod tests {
         let value = "test_value".to_string();
 
         // Put the item into the cache
-        handle.put(&key, &value);
+        handle.put(&key, &value).expect("Failed to put value into cache");
 
         // Get the item from the cache
-        let retrieved_value = handle.get(&key);
+        let retrieved_value = handle.get(&key).expect("Failed to get value from cache");
 
         // Assert that the retrieved value matches the expected value
         assert_eq!(retrieved_value, Some(value));
 
         let non_existing_key = "other_key".to_string();
-        let retrieved_not_found = handle.get::<String>(&non_existing_key);
+        let retrieved_not_found = handle
+            .get::<String>(&non_existing_key)
+            .expect("Failed to get value from cache");
 
         assert_eq!(retrieved_not_found, None);
     }
