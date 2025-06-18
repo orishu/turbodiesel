@@ -3,7 +3,6 @@ use diesel::connection::Connection;
 use diesel::query_dsl::load_dsl::ExecuteDsl;
 use diesel::query_dsl::{LoadQuery, RunQueryDsl};
 use diesel::result::QueryResult;
-use itertools::process_results;
 use log::{debug, error, info, warn};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -302,18 +301,13 @@ where
     C: CacheHandle,
 {
     fn execute(query: Self, conn: &mut Conn) -> QueryResult<usize> {
-        let cache = &query.cache;
-        let delete_results = query.keys.into_iter().map(|key| {
+        for key in query.keys {
             debug!("Invalidating cache for key: {}", key);
-            match cache.clone().delete(&key) {
-                Ok(_) => Ok(()),
-                Err(e) => {
-                    error!("Error deleting key {} from cache: {}", key, e);
-                    Err(diesel::result::Error::RollbackTransaction)
-                }
+            if let Err(e) = query.cache.clone().delete(&key) {
+                error!("Error deleting key {} from cache: {}", key, e);
+                return Err(diesel::result::Error::RollbackTransaction)
             }
-        });
-        process_results(delete_results, |_| ())?;
+        }
         ExecuteDsl::<Conn, Conn::Backend>::execute(query.inner_update, conn)
     }
 }
