@@ -1516,6 +1516,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "port_check"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2110609fb863cdb367d4e69d6c43c81ba6a8c7d18e80082fe9f3ef16b23afeed"
+
+[[package]]
 name = "portable-atomic"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2320,6 +2326,7 @@ dependencies = [
  "julian",
  "lazy_static",
  "log",
+ "port_check",
  "postgres",
  "redis",
  "serde",

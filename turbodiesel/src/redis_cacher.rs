@@ -217,8 +217,7 @@ impl Clone for RedisCacheHandle {
 
 #[cfg(test)]
 mod tests {
-    use dockertest::{DockerTest, TestBodySpecification};
-    use dotenvy::dotenv;
+    use crate::test_utils::run_with_redis;
 
     use super::*;
 
@@ -230,17 +229,8 @@ mod tests {
 
     #[test]
     fn test_redis_get_and_set() {
-        dotenv().ok();
-        let image =
-            dockertest::Image::with_repository("redis").source(dockertest::Source::DockerHub);
-        let mut redis_container = TestBodySpecification::with_image(image);
-        redis_container.modify_port_map(6379, 6380);
-        let mut test = DockerTest::new();
-        test.provide_container(redis_container);
-        info!("Running Redis integration test...");
-        test.run(|_| async move {
-            let redis_url = "redis://localhost:6380";
-            let cache = RedisCache::new(redis_url).expect("Failed to create RedisCache");
+        run_with_redis(async move |redis_url, _| {
+            let cache = RedisCache::new(redis_url.as_str()).expect("Failed to create RedisCache");
             let mut handle = cache.handle();
             handle
                 .wait_until_online(6)
@@ -289,6 +279,5 @@ mod tests {
                 "Retrieved value expected to be None after deletion"
             );
         });
-        info!("Redis integration test completed successfully.");
     }
 }

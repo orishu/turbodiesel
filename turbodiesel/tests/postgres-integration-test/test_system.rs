@@ -15,7 +15,7 @@ use turbodiesel::statement_wrappers::*;
 #[cfg(test)]
 #[ctor::ctor]
 fn init() {
-    crate::test_utils::init_logging_for_tests();
+    turbodiesel::test_utils::init_logging_for_tests();
 }
 
 #[test]
@@ -125,10 +125,27 @@ fn system_test_with_inmemory_cache() {
 #[test]
 #[cfg(feature = "redis")]
 fn system_test_with_redis() {
+    use turbodiesel::test_utils::run_with_redis;
+
+    run_with_redis(async |redis_url, _| {
+        inner_system_test_with_redis(redis_url).await;
+    });
+}
+
+async fn inner_system_test_with_redis(redis_url: String) {
     use turbodiesel::{cacher::CacheHandle, redis_cacher::RedisCache};
 
-    let cache = RedisCache::new("redis://localhost:6379").expect("Failed to create RedisCache");
+    let cache = RedisCache::new(redis_url.as_str()).expect("Failed to create RedisCache");
     let handle = cache.handle();
+
+    handle
+        .wait_until_online(6)
+        .await
+        .expect("Redis is not online after retries");
+    handle
+        .load_redis_functions()
+        .expect("Failed to load Redis functions");
+
     let row_with_cache_key = (Student::as_select(), sql::<Text>("'student:' || id"));
 
     let connection = &mut establish_connection();
