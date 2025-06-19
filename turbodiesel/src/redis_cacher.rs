@@ -232,13 +232,6 @@ mod tests {
         run_with_redis(async move |redis_url, _| {
             let cache = RedisCache::new(redis_url.as_str()).expect("Failed to create RedisCache");
             let mut handle = cache.handle();
-            handle
-                .wait_until_online(6)
-                .await
-                .expect("Redis is not online after retries");
-            handle
-                .load_redis_functions()
-                .expect("Failed to load Redis functions");
 
             let key = "test_key".to_string();
             let value = "test_value".to_string();
