@@ -13,3 +13,4 @@ pub mod statement_extension_inmemory;
 pub mod statement_extension_redis;
 
 pub mod test_utils;
+pub mod redis_test_util;

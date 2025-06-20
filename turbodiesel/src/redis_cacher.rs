@@ -217,7 +217,7 @@ impl Clone for RedisCacheHandle {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_utils::run_with_redis;
+    use crate::redis_test_util::RedisTestUtil;
 
     use super::*;
 
@@ -229,7 +229,8 @@ mod tests {
 
     #[test]
     fn test_redis_get_and_set() {
-        run_with_redis(async move |redis_url, _| {
+        let redis_test = RedisTestUtil::new();
+        redis_test.run_test_with_redis(async move |redis_url, _| {
             let cache = RedisCache::new(redis_url.as_str()).expect("Failed to create RedisCache");
             let mut handle = cache.handle();
 

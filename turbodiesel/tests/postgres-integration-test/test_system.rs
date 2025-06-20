@@ -10,6 +10,7 @@ use diesel::sql_types::Text;
 use julian::{Calendar, Month, system2jdn};
 use lazy_static::lazy_static;
 use log::info;
+use turbodiesel::redis_test_util::RedisTestUtil;
 use turbodiesel::statement_wrappers::*;
 
 #[cfg(test)]
@@ -125,9 +126,8 @@ fn system_test_with_inmemory_cache() {
 #[test]
 #[cfg(feature = "redis")]
 fn system_test_with_redis() {
-    use turbodiesel::test_utils::run_with_redis;
-
-    run_with_redis(async |redis_url, _| {
+    let redis_test = RedisTestUtil::new();
+    redis_test.run_test_with_redis(async |redis_url, _| {
         inner_system_test_with_redis(redis_url).await;
     });
 }
