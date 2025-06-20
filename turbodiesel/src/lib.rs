@@ -14,3 +14,4 @@ pub mod statement_extension_redis;
 
 pub mod test_utils;
 pub mod redis_test_util;
+pub mod postgres_test_util;
