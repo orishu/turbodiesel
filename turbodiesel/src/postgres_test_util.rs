@@ -3,7 +3,6 @@ use diesel::dsl;
 use diesel::prelude::PgConnection;
 use diesel::sql_types::Integer;
 use diesel::{Connection, RunQueryDsl};
-use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 use dockertest::DockerOperations;
 use dockertest::{DockerTest, TestBodySpecification};
 use log::info;
@@ -11,21 +10,11 @@ use port_check::free_local_ipv4_port;
 use std::error::Error;
 use std::time::Duration;
 
-pub struct PostgresTestUtil {
-    migrations_func: Option<fn() -> EmbeddedMigrations>,
-}
+pub struct PostgresTestUtil {}
 
 impl PostgresTestUtil {
     pub fn new() -> Self {
-        PostgresTestUtil {
-            migrations_func: None,
-        }
-    }
-
-    pub fn with_migrations(migrations_func: fn() -> EmbeddedMigrations) -> Self {
-        PostgresTestUtil {
-            migrations_func: Some(migrations_func),
-        }
+        PostgresTestUtil {}
     }
 
     pub fn run_test_with_postgres<Fun, Fut>(&self, f: Fun)
@@ -43,15 +32,10 @@ impl PostgresTestUtil {
         container.modify_env("POSTGRES_HOST_AUTH_METHOD", "trust");
         test.provide_container(container);
         info!("Running inside Postgres: {}", url);
-        let migrations_func = self.migrations_func.clone();
         test.run(async move |ops| {
             Self::wait_until_postgres_online(&url, 6)
                 .await
                 .expect("postgres is not online");
-            if let Some(mig_func) = &migrations_func {
-                info!("Running migrations...");
-                Self::run_migrations(&url, mig_func).expect("Failed running migrations");
-            }
             f(url, ops).await;
         });
         info!("Finished running inside Redis.");
@@ -78,21 +62,13 @@ impl PostgresTestUtil {
         }
         Ok(())
     }
-
-    fn run_migrations(
-        url: &String,
-        migrations_func: &fn() -> EmbeddedMigrations,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let mut connection = PgConnection::establish(&url).map_err(|e| Box::new(e))?;
-        let migrations = migrations_func();
-        connection.run_pending_migrations(migrations)?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use diesel::sql_types::BigInt;
+    use diesel_migrations::embed_migrations;
+    use diesel_migrations::{EmbeddedMigrations, MigrationHarness};
 
     use super::*;
     pub const MIGRATIONS: EmbeddedMigrations =
@@ -100,10 +76,12 @@ mod tests {
 
     #[test]
     fn test_basic_connect() {
-        let util = PostgresTestUtil::with_migrations(|| MIGRATIONS);
+        let util = PostgresTestUtil::new();
 
         util.run_test_with_postgres(async move |url, _| {
             let mut con = PgConnection::establish(&url).expect("Error connecting to postgres");
+            con.run_pending_migrations(MIGRATIONS)
+                .expect("failed running migrations");
             {
                 let result = diesel::select(dsl::sql::<Integer>("1"))
                     .get_result::<i32>(&mut con)
