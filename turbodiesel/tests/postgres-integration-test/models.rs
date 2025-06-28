@@ -30,7 +30,7 @@ impl<'de> Deserialize<'de> for Student {
     }
 }
 
-#[derive(Queryable, Selectable, Insertable, Debug, PartialEq)]
+#[derive(Queryable, Selectable, Insertable, Debug, PartialEq, Clone)]
 #[diesel(table_name = crate::schema::students)]
 #[diesel(check_for_backend(pg::Pg))]
 pub struct Student {

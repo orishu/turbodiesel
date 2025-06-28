@@ -52,6 +52,7 @@ where
     inner: I,
     keys: K,
     cache: C,
+    populate: bool,
 }
 
 impl<I, U, C, K> ResultCacheLookupIterator<I, U, C, K>
@@ -61,16 +62,23 @@ where
     U: Serialize + DeserializeOwned,
     K: Iterator<Item = String>,
 {
-    fn new(inner: I, cache: C, keys: K) -> Self {
-        Self { inner, keys, cache }
+    fn new(inner: I, cache: C, keys: K, populate: bool) -> Self {
+        Self {
+            inner,
+            keys,
+            cache,
+            populate,
+        }
     }
 
     fn call_inner_and_cache(&mut self, key: &String) -> Option<QueryResult<U>> {
         match self.inner.next() {
             Some(Ok(val)) => {
-                let res = self.cache.put::<U>(key, &val);
-                if let Err(e) = res {
-                    warn!("Error caching value for key {}: {}", key, e);
+                if self.populate {
+                    let res = self.cache.put::<U>(key, &val);
+                    if let Err(e) = res {
+                        warn!("Error caching value for key {}: {}", key, e);
+                    }
                 }
                 Some(Ok(val))
             }
@@ -98,8 +106,7 @@ where
             }
             Ok(None) => {
                 debug!("Cache miss for key: {}, reading from inner", key);
-                self.call_inner_and_cache(&key);
-                None
+                self.call_inner_and_cache(&key)
             }
             Err(e) => {
                 warn!("Error retrieving from cache for key: {}; error {}", key, e);
@@ -175,6 +182,7 @@ where
     inner_select: T,
     keys: K,
     cache: C,
+    populate: bool,
 }
 
 impl<T, C, K> SelectCacheReadWrapper<T, C, K>
@@ -182,11 +190,12 @@ where
     C: CacheHandle,
     K: Iterator<Item = String>,
 {
-    fn new(inner_select: T, keys: K, cache: C) -> Self {
+    fn new(inner_select: T, keys: K, cache: C, populate: bool) -> Self {
         Self {
             inner_select,
             keys,
             cache,
+            populate,
         }
     }
 }
@@ -227,7 +236,8 @@ where
         debug!("In SelectCacheReadWrapper internal_load");
 
         let load_iter = self.inner_select.internal_load(conn)?;
-        let lookup_iter = ResultCacheLookupIterator::new(load_iter, self.cache, self.keys);
+        let lookup_iter =
+            ResultCacheLookupIterator::new(load_iter, self.cache, self.keys, self.populate);
         Ok(lookup_iter)
     }
 }
@@ -235,7 +245,7 @@ where
 pub trait WrappableQuery {
     type Cache: CacheHandle;
 
-    fn cache_results<U>(self, cache: Self::Cache) -> SelectCachingWrapper<Self, Self::Cache>
+    fn populate_cache<U>(self, cache: Self::Cache) -> SelectCachingWrapper<Self, Self::Cache>
     where
         Self: Sized,
         U: Serialize + DeserializeOwned,
@@ -243,7 +253,7 @@ pub trait WrappableQuery {
         SelectCachingWrapper::new(self, cache)
     }
 
-    fn use_cache_key<'a, U>(
+    fn try_from_cache<'a, U>(
         self,
         cache: Self::Cache,
         key: &'a str,
@@ -252,10 +262,22 @@ pub trait WrappableQuery {
         Self: Sized,
         U: Serialize + DeserializeOwned,
     {
-        SelectCacheReadWrapper::new(self, vec![key.to_string()].into_iter(), cache)
+        SelectCacheReadWrapper::new(self, vec![key.to_string()].into_iter(), cache, false)
     }
 
-    fn use_cache_keys<U, K>(
+    fn try_from_cache_and_populate<'a, U>(
+        self,
+        cache: Self::Cache,
+        key: &'a str,
+    ) -> SelectCacheReadWrapper<Self, Self::Cache, <Vec<String> as IntoIterator>::IntoIter>
+    where
+        Self: Sized,
+        U: Serialize + DeserializeOwned,
+    {
+        SelectCacheReadWrapper::new(self, vec![key.to_string()].into_iter(), cache, true)
+    }
+
+    fn try_from_cache_multi<U, K>(
         self,
         cache: Self::Cache,
         keys: K,
@@ -265,7 +287,7 @@ pub trait WrappableQuery {
         U: Serialize + DeserializeOwned,
         K: Iterator<Item = String>,
     {
-        SelectCacheReadWrapper::new(self, keys, cache)
+        SelectCacheReadWrapper::new(self, keys, cache, false)
     }
 }
 
@@ -305,7 +327,7 @@ where
             debug!("Invalidating cache for key: {}", key);
             if let Err(e) = query.cache.clone().delete(&key) {
                 error!("Error deleting key {} from cache: {}", key, e);
-                return Err(diesel::result::Error::RollbackTransaction)
+                return Err(diesel::result::Error::RollbackTransaction);
             }
         }
         ExecuteDsl::<Conn, Conn::Backend>::execute(query.inner_update, conn)

@@ -15,3 +15,11 @@ where
 {
     type Cache = HashmapCacheHandle;
 }
+
+impl<T, C> WrappableQuery
+    for SelectCachingWrapper<T, C>
+where
+    C: CacheHandle,
+{
+    type Cache = HashmapCacheHandle;
+}
