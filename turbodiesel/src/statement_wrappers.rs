@@ -333,7 +333,7 @@ pub trait WrappableQuery {
     /// for each row. For example, you can select a student row and
     /// concatenate a cache prefix:
     ///
-    /// ```rust
+    /// ```ignore
     /// let row_with_cache_key = (Student::as_select(), sql::<Text>("'student:' || id"));
     /// let results = students::dsl::students
     ///     .select(row_with_cache_key)
@@ -344,7 +344,7 @@ pub trait WrappableQuery {
     /// You can also combine `populate_cache` with `try_from_cache` to benefit
     /// from cache reads while still populating the cache if missing:
     ///
-    /// ```rust
+    /// ```ignore
     /// let results = students::dsl::students
     ///     .select(row_with_cache_key)
     ///     .populate_cache::<Student>(handle.clone())
