@@ -116,7 +116,7 @@ async fn system_test_with_postgres_and_redis() {
     postgres_test
         .run_test_with_postgres(async |postgres_url, _| {
             let connection = &mut PgConnection::establish(&postgres_url)
-                .expect("Failed to connecto to postgres");
+                .expect("Failed to connect to postgres");
             connection
                 .run_pending_migrations(MIGRATIONS)
                 .expect("failed running migrations");
@@ -135,7 +135,7 @@ async fn inner_system_test_with_postgres_and_redis(postgres_url: String, redis_u
     use turbodiesel::{cacher::CacheHandle, redis_cacher::RedisCache};
 
     let connection =
-        &mut PgConnection::establish(&postgres_url).expect("Failed to connecto to postgres");
+        &mut PgConnection::establish(&postgres_url).expect("Failed to connect to postgres");
 
     let cache = RedisCache::new(redis_url.as_str()).expect("Failed to create RedisCache");
     let handle = cache.handle();

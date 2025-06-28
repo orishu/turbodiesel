@@ -9,6 +9,7 @@ pub fn init_logging_for_tests() {
         let _ = env_logger::builder()
             .target(env_logger::Target::Stdout)
             .filter_level(log::LevelFilter::Info)
+            .filter_module("turbodiesel", log::LevelFilter::Debug)
             .is_test(true)
             .try_init();
     });
