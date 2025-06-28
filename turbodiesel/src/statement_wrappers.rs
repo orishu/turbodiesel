@@ -3,7 +3,7 @@ use diesel::connection::Connection;
 use diesel::query_dsl::load_dsl::ExecuteDsl;
 use diesel::query_dsl::{LoadQuery, RunQueryDsl};
 use diesel::result::QueryResult;
-use log::{debug, error, info, warn};
+use log::{debug, error, warn};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -28,7 +28,7 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         let item = self.inner.next();
         if let Some(ref it_res) = item {
-            info!("Item result is {:?}", it_res);
+            debug!("Item result is {:?}", it_res);
             if let Ok(it) = it_res {
                 let res = self.cache.put::<U>(&it.1, &it.0);
                 if let Err(e) = res {
@@ -156,7 +156,7 @@ where
         Conn: 'a;
 
     fn internal_load(self, conn: &mut Conn) -> QueryResult<Self::RowIter<'_>> {
-        debug!("In internal_load (2)");
+        debug!("In SelectCachingWrapper internal_load");
 
         let load_iter = self.inner_select.internal_load(conn)?;
         let caching_iter = ResultCachingIterator {
@@ -224,7 +224,7 @@ where
         Conn: 'a;
 
     fn internal_load(self, conn: &mut Conn) -> QueryResult<Self::RowIter<'_>> {
-        debug!("In internal_load (1)");
+        debug!("In SelectCacheReadWrapper internal_load");
 
         let load_iter = self.inner_select.internal_load(conn)?;
         let lookup_iter = ResultCacheLookupIterator::new(load_iter, self.cache, self.keys);

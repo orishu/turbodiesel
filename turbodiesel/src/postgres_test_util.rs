@@ -17,7 +17,7 @@ impl PostgresTestUtil {
         PostgresTestUtil {}
     }
 
-    pub fn run_test_with_postgres<Fun, Fut>(&self, f: Fun)
+    pub async fn run_test_with_postgres<Fun, Fut>(&self, f: Fun)
     where
         Fut: Future<Output = ()> + Send + 'static,
         Fun: FnOnce(String, DockerOperations) -> Fut + Send + 'static,
@@ -32,12 +32,13 @@ impl PostgresTestUtil {
         container.modify_env("POSTGRES_HOST_AUTH_METHOD", "trust");
         test.provide_container(container);
         info!("Running inside Postgres: {}", url);
-        test.run(async move |ops| {
+        test.run_async(async move |ops| {
             Self::wait_until_postgres_online(&url, 6)
                 .await
                 .expect("postgres is not online");
             f(url, ops).await;
-        });
+        })
+        .await;
         info!("Finished running inside Redis.");
     }
 
@@ -74,8 +75,8 @@ mod tests {
     pub const MIGRATIONS: EmbeddedMigrations =
         embed_migrations!("tests/postgres-integration-test/migrations");
 
-    #[test]
-    fn test_basic_connect() {
+    #[tokio::test]
+    async fn test_basic_connect() {
         let util = PostgresTestUtil::new();
 
         util.run_test_with_postgres(async move |url, _| {
@@ -94,6 +95,7 @@ mod tests {
                     .unwrap();
                 assert_eq!(result, 0);
             }
-        });
+        })
+        .await;
     }
 }

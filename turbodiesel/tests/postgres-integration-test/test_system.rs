@@ -22,31 +22,10 @@ fn init() {
 #[test]
 fn simple_insert_using_diesel() {
     let connection = &mut establish_connection();
-    let records = vec![
-        Student {
-            id: 1,
-            name: "John".to_string(),
-            dob: None,
-        },
-        Student {
-            id: 2,
-            name: "Ori".to_string(),
-            dob: Some(date_from_string("1978-02-16")),
-        },
-        Student {
-            id: 3,
-            name: "Dan".to_string(),
-            dob: Some(date_from_string("2009-04-18")),
-        },
-    ];
     diesel::delete(students::table)
         .execute(connection)
         .expect("Error deleting existing students");
-    diesel::insert_into(students::table)
-        .values(records)
-        .returning(Student::as_returning())
-        .get_results::<Student>(connection)
-        .expect("Error saving new student");
+    fill_students_table(connection);
 }
 
 #[test]
@@ -123,32 +102,48 @@ fn system_test_with_inmemory_cache() {
         });
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "redis")]
-fn system_test_with_redis() {
-    let redis_test = RedisTestUtil::new();
-    redis_test.run_test_with_redis(async |redis_url, _| {
-        inner_system_test_with_redis(redis_url).await;
-    });
+async fn system_test_with_postgres_and_redis() {
+    use diesel_migrations::embed_migrations;
+    use diesel_migrations::{EmbeddedMigrations, MigrationHarness};
+    use turbodiesel::postgres_test_util::PostgresTestUtil;
+
+    pub const MIGRATIONS: EmbeddedMigrations =
+        embed_migrations!("tests/postgres-integration-test/migrations");
+
+    let postgres_test = PostgresTestUtil::new();
+    postgres_test
+        .run_test_with_postgres(async |postgres_url, _| {
+            let connection = &mut PgConnection::establish(&postgres_url)
+                .expect("Failed to connecto to postgres");
+            connection
+                .run_pending_migrations(MIGRATIONS)
+                .expect("failed running migrations");
+
+            let redis_test = RedisTestUtil::new();
+            redis_test
+                .run_test_with_redis(async |redis_url, _| {
+                    inner_system_test_with_postgres_and_redis(postgres_url, redis_url).await;
+                })
+                .await;
+        })
+        .await;
 }
 
-async fn inner_system_test_with_redis(redis_url: String) {
+async fn inner_system_test_with_postgres_and_redis(postgres_url: String, redis_url: String) {
     use turbodiesel::{cacher::CacheHandle, redis_cacher::RedisCache};
+
+    let connection =
+        &mut PgConnection::establish(&postgres_url).expect("Failed to connecto to postgres");
 
     let cache = RedisCache::new(redis_url.as_str()).expect("Failed to create RedisCache");
     let handle = cache.handle();
 
-    handle
-        .wait_until_online(6)
-        .await
-        .expect("Redis is not online after retries");
-    handle
-        .load_redis_functions()
-        .expect("Failed to load Redis functions");
-
     let row_with_cache_key = (Student::as_select(), sql::<Text>("'student:' || id"));
 
-    let connection = &mut establish_connection();
+    // Insert 3 rows to the table.
+    fill_students_table(connection);
 
     diesel::update(students::table)
         .set(students::dsl::name.eq("Ori1"))
@@ -205,6 +200,19 @@ async fn inner_system_test_with_redis(redis_url: String) {
         });
 }
 
+#[test]
+fn test_basic_json_serialization() {
+    let student = Student {
+        id: 1,
+        name: "John".to_string(),
+        dob: Some(date_from_string("1978-02-16")),
+    };
+    let serialized = serde_json::to_string(&student).unwrap();
+    info!("Serialized student: {}", serialized);
+    let deserialized: Student = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(student, deserialized);
+}
+
 lazy_static! {
     static ref JULIAN_DAY_2000: i32 = Calendar::GREGORIAN
         .at_ymd(2000, Month::January, 1)
@@ -217,15 +225,27 @@ fn date_from_string(date_str: &str) -> PgDate {
     PgDate(system2jdn(parsed_date.into()).unwrap().0 - *JULIAN_DAY_2000)
 }
 
-#[test]
-fn test_basic_json_serialization() {
-    let student = Student {
-        id: 1,
-        name: "John".to_string(),
-        dob: Some(date_from_string("1978-02-16")),
-    };
-    let serialized = serde_json::to_string(&student).unwrap();
-    info!("Serialized student: {}", serialized);
-    let deserialized: Student = serde_json::from_str(&serialized).unwrap();
-    assert_eq!(student, deserialized);
+fn fill_students_table(connection: &mut PgConnection) {
+    let records = vec![
+        Student {
+            id: 1,
+            name: "John".to_string(),
+            dob: None,
+        },
+        Student {
+            id: 2,
+            name: "Ori".to_string(),
+            dob: Some(date_from_string("1978-02-16")),
+        },
+        Student {
+            id: 3,
+            name: "Dan".to_string(),
+            dob: Some(date_from_string("2009-04-18")),
+        },
+    ];
+    diesel::insert_into(students::table)
+        .values(records)
+        .returning(Student::as_returning())
+        .get_results::<Student>(connection)
+        .expect("Error saving new student");
 }

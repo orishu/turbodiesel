@@ -2414,6 +2414,7 @@ dependencies = [
  "redis",
  "serde",
  "serde_json",
+ "tokio",
  "wildmatch",
 ]
 

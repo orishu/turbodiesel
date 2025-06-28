@@ -1,7 +1,7 @@
 use crate::cacher::CacheError;
 use crate::cacher::CacheHandle;
 use async_std::task;
-use log::info;
+use log::{debug, info};
 use redis;
 use redis::Commands;
 use redis::RedisError;
@@ -87,7 +87,7 @@ impl RedisCacheHandle {
         let response = con
             .recv_response()
             .expect("Failed to receive response from Redis function call");
-        info!("Response from Redis td_get function call: {:?}", response);
+        debug!("Response from Redis td_get function call: {:?}", response);
         match response {
             redis::Value::Nil => None,
             _ => Some(response),
@@ -154,7 +154,7 @@ impl CacheHandle for RedisCacheHandle {
         let response = con.recv_response().map_err(|e| {
             CacheError::with_cause("Failed to receive response from Redis function call", e)
         })?;
-        info!("Response from Redis td_set function call: {:?}", response);
+        debug!("Response from Redis td_set function call: {:?}", response);
         Ok(())
     }
 
@@ -180,7 +180,7 @@ impl CacheHandle for RedisCacheHandle {
         let response = con.recv_response().map_err(|e| {
             CacheError::with_cause("Failed to receive response from Redis function call", e)
         })?;
-        info!(
+        debug!(
             "Response from Redis td_invalidate function call: {:?}",
             response
         );
@@ -227,51 +227,55 @@ mod tests {
         crate::test_utils::init_logging_for_tests();
     }
 
-    #[test]
-    fn test_redis_get_and_set() {
+    #[tokio::test]
+    async fn test_redis_get_and_set() {
         let redis_test = RedisTestUtil::new();
-        redis_test.run_test_with_redis(async move |redis_url, _| {
-            let cache = RedisCache::new(redis_url.as_str()).expect("Failed to create RedisCache");
-            let mut handle = cache.handle();
+        redis_test
+            .run_test_with_redis(async move |redis_url, _| {
+                let cache =
+                    RedisCache::new(redis_url.as_str()).expect("Failed to create RedisCache");
+                let mut handle = cache.handle();
 
-            let key = "test_key".to_string();
-            let value = "test_value".to_string();
+                let key = "test_key".to_string();
+                let value = "test_value".to_string();
 
-            // Test put
-            handle
-                .put(&key, &value)
-                .expect("Failed to put value into cache");
+                // Test put
+                handle
+                    .put(&key, &value)
+                    .expect("Failed to put value into cache");
 
-            // Test get
-            let retrieved_value: Option<String> =
-                handle.get(&key).expect("Failed to get value from cache");
-            assert_eq!(
-                retrieved_value,
-                Some(value),
-                "Retrieved value does not match set value"
-            );
+                // Test get
+                let retrieved_value: Option<String> =
+                    handle.get(&key).expect("Failed to get value from cache");
+                assert_eq!(
+                    retrieved_value,
+                    Some(value),
+                    "Retrieved value does not match set value"
+                );
 
-            // Test scan keys
-            let scan_result = handle.scan_keys("test_key*").expect("Failed to scan keys");
-            assert_eq!(scan_result.len(), 1, "Expected one key in scan result");
-            let expected_raw_value = "bulk-string('\"\\\"test_value\\\"\"')".to_string();
-            assert_eq!(
-                scan_result.get(&"test_key".to_string()),
-                Some(&expected_raw_value),
-                "Scan result does not match expected value"
-            );
+                // Test scan keys
+                let scan_result = handle.scan_keys("test_key*").expect("Failed to scan keys");
+                assert_eq!(scan_result.len(), 1, "Expected one key in scan result");
+                let expected_raw_value = "bulk-string('\"\\\"test_value\\\"\"')".to_string();
+                assert_eq!(
+                    scan_result.get(&"test_key".to_string()),
+                    Some(&expected_raw_value),
+                    "Scan result does not match expected value"
+                );
 
-            // Test delete
-            handle
-                .delete(&key)
-                .expect("Failed to delete key from cache");
+                // Test delete
+                handle
+                    .delete(&key)
+                    .expect("Failed to delete key from cache");
 
-            // Test get
-            let empty: Option<String> = handle.get(&key).expect("Failed to get value from cache");
-            assert_eq!(
-                empty, None,
-                "Retrieved value expected to be None after deletion"
-            );
-        });
+                // Test get
+                let empty: Option<String> =
+                    handle.get(&key).expect("Failed to get value from cache");
+                assert_eq!(
+                    empty, None,
+                    "Retrieved value expected to be None after deletion"
+                );
+            })
+            .await;
     }
 }

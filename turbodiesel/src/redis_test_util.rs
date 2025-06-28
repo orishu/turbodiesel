@@ -22,7 +22,7 @@ impl RedisTestUtil {
         RedisTestUtil { client, url, port }
     }
 
-    pub fn run_test_with_redis<Fun, Fut>(&self, f: Fun)
+    pub async fn run_test_with_redis<Fun, Fut>(&self, f: Fun)
     where
         Fut: Future<Output = ()> + Send + 'static,
         Fun: FnOnce(String, DockerOperations) -> Fut + Send + 'static,
@@ -36,13 +36,13 @@ impl RedisTestUtil {
         info!("Running inside Redis: {}", self.url);
         let client = self.client.clone();
         let url = self.url.clone();
-        test.run(|ops| async move {
+        test.run_async(|ops| async move {
             Self::wait_until_redis_online(&client, 6)
                 .await
                 .expect("redis is not online");
             Self::load_redis_functions(&client).expect("failed loading redis functions");
             f(url, ops).await;
-        });
+        }).await;
         info!("Finished running inside Redis.");
     }
 
