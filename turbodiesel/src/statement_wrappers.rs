@@ -259,6 +259,66 @@ where
     }
 }
 
+/// Wrapper for a Diesel update statement that invalidates specified cache keys
+/// after a successful database update.
+///
+/// Returned by `invalidate_key` and `invalidate_keys`.
+pub struct UpdateWrapper<T, K, C>
+where
+    K: Iterator<Item = String>,
+    C: CacheHandle,
+{
+    inner_update: T,
+    keys: K,
+    cache: C,
+}
+
+impl<T, K, C> UpdateWrapper<T, K, C>
+where
+    K: Iterator<Item = String>,
+    C: CacheHandle,
+{
+    fn new(inner_update: T, keys: K, cache: C) -> Self {
+        Self {
+            inner_update,
+            keys,
+            cache,
+        }
+    }
+}
+
+impl<T, Conn, K, C> ExecuteDsl<Conn, Conn::Backend> for UpdateWrapper<T, K, C>
+where
+    T: ExecuteDsl<Conn>,
+    Conn: Connection,
+    K: Iterator<Item = String>,
+    C: CacheHandle,
+{
+    fn execute(query: Self, conn: &mut Conn) -> QueryResult<usize> {
+        for key in query.keys {
+            debug!("Invalidating cache for key: {}", key);
+            if let Err(e) = query.cache.clone().delete(&key) {
+                error!("Error deleting key {} from cache: {}", key, e);
+                return Err(diesel::result::Error::RollbackTransaction);
+            }
+        }
+        ExecuteDsl::<Conn, Conn::Backend>::execute(query.inner_update, conn)
+    }
+}
+
+impl<T, Conn, K, C> RunQueryDsl<Conn> for UpdateWrapper<T, K, C>
+where
+    K: Iterator<Item = String>,
+    C: CacheHandle,
+{
+}
+
+/// Provides extension methods for Diesel select statements that integrate caching behavior.
+///
+/// This trait allows wrapping a Diesel select with cache population, cache lookup,
+/// and hybrid read-through patterns, seamlessly woven into Diesel’s query DSL.
+///
+/// Implemented for all Diesel select queries.
 pub trait WrappableQuery {
     type Cache: CacheHandle;
 
@@ -362,60 +422,10 @@ pub trait WrappableQuery {
     }
 }
 
-/// Wrapper for a Diesel update statement that invalidates specified cache keys
-/// after a successful database update.
+/// Provides extension methods for Diesel update statements that allow automatic
+/// cache key invalidation after the update executes.
 ///
-/// Returned by `invalidate_key` and `invalidate_keys`.
-pub struct UpdateWrapper<T, K, C>
-where
-    K: Iterator<Item = String>,
-    C: CacheHandle,
-{
-    inner_update: T,
-    keys: K,
-    cache: C,
-}
-
-impl<T, K, C> UpdateWrapper<T, K, C>
-where
-    K: Iterator<Item = String>,
-    C: CacheHandle,
-{
-    fn new(inner_update: T, keys: K, cache: C) -> Self {
-        Self {
-            inner_update,
-            keys,
-            cache,
-        }
-    }
-}
-
-impl<T, Conn, K, C> ExecuteDsl<Conn, Conn::Backend> for UpdateWrapper<T, K, C>
-where
-    T: ExecuteDsl<Conn>,
-    Conn: Connection,
-    K: Iterator<Item = String>,
-    C: CacheHandle,
-{
-    fn execute(query: Self, conn: &mut Conn) -> QueryResult<usize> {
-        for key in query.keys {
-            debug!("Invalidating cache for key: {}", key);
-            if let Err(e) = query.cache.clone().delete(&key) {
-                error!("Error deleting key {} from cache: {}", key, e);
-                return Err(diesel::result::Error::RollbackTransaction);
-            }
-        }
-        ExecuteDsl::<Conn, Conn::Backend>::execute(query.inner_update, conn)
-    }
-}
-
-impl<T, Conn, K, C> RunQueryDsl<Conn> for UpdateWrapper<T, K, C>
-where
-    K: Iterator<Item = String>,
-    C: CacheHandle,
-{
-}
-
+/// Implemented for all Diesel update queries.
 pub trait WrappableUpdate {
     type Cache: CacheHandle;
 
