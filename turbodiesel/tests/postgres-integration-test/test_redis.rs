@@ -1,5 +1,8 @@
 use turbodiesel::{cacher::CacheHandle, redis_cacher::RedisCache};
 
+// This test runs against a local Redis server, it assumes that the custom functions have been loaded.
+// Load the function from the lua/functions.lua file using the following command:
+// cat lua/functions.lua| redis-cli -x FUNCTION LOAD REPLACE
 #[test]
 fn set_and_get() {
     let redis_url = "redis://localhost:6379";
