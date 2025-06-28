@@ -10,7 +10,6 @@ use diesel::sql_types::Text;
 use julian::{Calendar, Month, system2jdn};
 use lazy_static::lazy_static;
 use log::info;
-use turbodiesel::redis_test_util::RedisTestUtil;
 use turbodiesel::statement_wrappers::*;
 
 #[cfg(test)]
@@ -59,7 +58,7 @@ fn system_test_with_inmemory_cache() {
     students::dsl::students
         .select(row_with_cache_key)
         .filter(students::dsl::id.eq(2))
-        .cache_results::<Student>(handle.clone())
+        .populate_cache::<Student>(handle.clone())
         .load_iter::<Student, DefaultLoadingMode>(connection)
         .expect("Error loading student")
         .for_each(|student| {
@@ -71,7 +70,7 @@ fn system_test_with_inmemory_cache() {
     students::dsl::students
         .select(Student::as_select())
         .filter(students::dsl::id.eq_any(vec![1, 2]))
-        .use_cache_keys::<Student, _>(
+        .try_from_cache_multi::<Student, _>(
             handle.clone(),
             vec!["student:1".to_string(), "student:2".to_string()].into_iter(),
         )
@@ -94,7 +93,7 @@ fn system_test_with_inmemory_cache() {
     students::dsl::students
         .select(Student::as_select())
         .filter(students::dsl::id.eq(2))
-        .use_cache_key::<Student>(handle.clone(), "student:2")
+        .try_from_cache::<Student>(handle.clone(), "student:2")
         .load_iter::<Student, DefaultLoadingMode>(connection)
         .expect("Error loading student")
         .for_each(|student| {
@@ -108,6 +107,7 @@ async fn system_test_with_postgres_and_redis() {
     use diesel_migrations::embed_migrations;
     use diesel_migrations::{EmbeddedMigrations, MigrationHarness};
     use turbodiesel::postgres_test_util::PostgresTestUtil;
+    use turbodiesel::redis_test_util::RedisTestUtil;
 
     pub const MIGRATIONS: EmbeddedMigrations =
         embed_migrations!("tests/postgres-integration-test/migrations");
@@ -131,6 +131,7 @@ async fn system_test_with_postgres_and_redis() {
         .await;
 }
 
+#[cfg(feature = "redis")]
 async fn inner_system_test_with_postgres_and_redis(postgres_url: String, redis_url: String) {
     use turbodiesel::{cacher::CacheHandle, redis_cacher::RedisCache};
 

@@ -1,5 +1,6 @@
+use crate::cacher::CacheHandle;
 use crate::cacher::HashmapCacheHandle;
-use crate::statement_wrappers::{WrappableQuery, WrappableUpdate};
+use crate::statement_wrappers::{SelectCachingWrapper, WrappableQuery, WrappableUpdate};
 use diesel::QuerySource;
 use diesel::query_builder::{SelectStatement, UpdateStatement};
 
@@ -16,8 +17,7 @@ where
     type Cache = HashmapCacheHandle;
 }
 
-impl<T, C> WrappableQuery
-    for SelectCachingWrapper<T, C>
+impl<T, C> WrappableQuery for SelectCachingWrapper<T, C>
 where
     C: CacheHandle,
 {

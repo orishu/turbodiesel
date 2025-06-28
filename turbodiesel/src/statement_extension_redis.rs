@@ -17,8 +17,7 @@ where
     type Cache = RedisCacheHandle;
 }
 
-impl<T, C> WrappableQuery
-    for SelectCachingWrapper<T, C>
+impl<T, C> WrappableQuery for SelectCachingWrapper<T, C>
 where
     C: CacheHandle,
 {
