@@ -205,7 +205,7 @@ fn test_basic_json_serialization() {
     let student = Student {
         id: 1,
         name: "John".to_string(),
-        dob: Some(date_from_string("1978-02-16")),
+        dob: Some(date_from_string("1978-02-14")),
     };
     let serialized = serde_json::to_string(&student).unwrap();
     info!("Serialized student: {}", serialized);
@@ -235,12 +235,12 @@ fn fill_students_table(connection: &mut PgConnection) {
         Student {
             id: 2,
             name: "Ori".to_string(),
-            dob: Some(date_from_string("1978-02-16")),
+            dob: Some(date_from_string("1978-02-14")),
         },
         Student {
             id: 3,
             name: "Dan".to_string(),
-            dob: Some(date_from_string("2009-04-18")),
+            dob: Some(date_from_string("2009-04-12")),
         },
     ];
     diesel::insert_into(students::table)
