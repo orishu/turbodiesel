@@ -3,18 +3,17 @@
 local function td_set(keys, args)
   local key = keys[1]
   local value = args[1]
-  local ts_sec = tonumber(args[2])
-  local ts_nsec = tonumber(args[3])
+  local input_sec = tonumber(args[2])
+  local input_nsec = tonumber(args[3])
 
-  local invalidate_key = "invalidate:" .. key
-  local invalidate_timestamp = redis.call("HGETALL", invalidate_key) -- Expected format: {'sec', seconds, 'nsec', nseconds}
-  local inv_sec = tonumber(invalidate_timestamp[2]) or 0
-  local inv_nsec = tonumber(invalidate_timestamp[4]) or 0
+  local invalidate_ts = redis.call("HMGET", key, 'inv_sec', 'inv_nsec')
+  local inv_sec = tonumber(invalidate_ts[1]) or 0
+  local inv_nsec = tonumber(invalidate_ts[2]) or 0
 
-  if ts_sec < inv_sec or (ts_sec == inv_sec and ts_nsec < inv_nsec) then
+  if input_sec < inv_sec or (input_sec == inv_sec and input_nsec < inv_nsec) then
     return 0 -- Skipped (data might be stale)
   else
-    redis.call("HSET", key, 'ts_sec', ts_sec, 'ts_nsec', ts_nsec, 'v', value)
+    redis.call("HSET", key, 'ts_sec', input_sec, 'ts_nsec', input_nsec, 'v', value)
     return 1
   end
 end
@@ -23,18 +22,18 @@ redis.register_function('td_set', td_set)
 
 local function td_invalidate(keys, args)
   local key = keys[1]
-  local sec = tonumber(args[1])
-  local nsec = tonumber(args[2])
+  local input_sec = tonumber(args[1])
+  local input_nsec = tonumber(args[2])
 
-  local invalidate_key = "invalidate:" .. key
-  local invalidate_timestamp = redis.call("HGETALL", invalidate_key) -- Expected format: {'sec', seconds, 'nsec', nseconds}
-  local old_sec = tonumber(invalidate_timestamp[2]) or 0
-  local old_nsec = tonumber(invalidate_timestamp[4]) or 0
+  local invalidate_ts = redis.call("HMGET", key, 'inv_sec', 'inv_nsec')
+  local inv_sec = tonumber(invalidate_ts[1]) or 0
+  local inv_nsec = tonumber(invalidate_ts[2]) or 0
 
-  if sec < old_sec or (sec == old_sec and nsec < old_nsec) then
+  if input_sec < inv_sec or (input_sec == inv_sec and input_nsec < inv_nsec) then
     return 0 -- Skipped (existing invalidation is newer than the one requested)
   else
-    redis.call("HSET", invalidate_key, 'sec', sec, 'nsec', nsec)
+    redis.call("HSET", key, 'inv_sec', input_sec, 'inv_nsec', input_nsec)
+    redis.call("EXPIRE", key, 120)
     return 1
   end
 end
@@ -44,20 +43,17 @@ redis.register_function('td_invalidate', td_invalidate)
 local function td_get(keys, args)
   local key = keys[1]
 
-  local record = redis.call("HGETALL", key) -- Expected format: {'ts_sec', seconds, 'ts_nsec', nseconds, 'v', value}
-  if record[1] == nil then
+  local record = redis.call("HMGET", key, 'ts_sec', 'ts_nsec', 'inv_sec', 'inv_nsec', 'v')
+  if record[5] == nil then
     return nil -- Not in cache
   end
-  local sec = tonumber(record[2])
-  local nsec = tonumber(record[4])
-  local value = record[6]
+  local ts_sec = tonumber(record[1]) or 0
+  local ts_nsec = tonumber(record[2]) or 0
+  local inv_sec = tonumber(record[3]) or 0
+  local inv_nsec = tonumber(record[4]) or 0
+  local value = record[5]
 
-  local invalidate_key = "invalidate:" .. key
-  local invalidate_timestamp = redis.call("HGETALL", invalidate_key) -- Expected format: {'sec', seconds, 'nsec', nseconds}
-  local inv_sec = tonumber(invalidate_timestamp[2]) or 0
-  local inv_nsec = tonumber(invalidate_timestamp[4]) or 0
-
-  if sec < inv_sec or (sec == inv_sec and nsec < inv_nsec) then
+  if ts_sec < inv_sec or (ts_sec == inv_sec and ts_nsec < inv_nsec) then
     return nil -- invalidated
   else
     return value
@@ -65,4 +61,3 @@ local function td_get(keys, args)
 end
 
 redis.register_function('td_get', td_get)
-
