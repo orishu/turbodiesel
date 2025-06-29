@@ -86,6 +86,19 @@ let students = students::dsl::students
     .collect::<Vec<_>>();
 ```
 
+**Read through cache and populate if not found:**
+
+```rust
+let students = students::dsl::students
+    .select(Student::as_select())
+    .filter(students::dsl::id.eq(2))
+    .try_from_cache_and_populate::<Student>(handle.clone(), "student:2")
+    .load_iter::<Student, DefaultLoadingMode>(connection)
+    .expect("Error loading student")
+    .map(|res| res.unwrap())
+    .collect::<Vec<_>>();
+```
+
 **Invalidate cache after an update:**
 
 ```rust
